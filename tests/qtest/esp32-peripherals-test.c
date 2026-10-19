@@ -34,6 +34,9 @@
 #define PCA_OUTPUT    0x0a
 #define PCA_MASK      0x0c
 #define PCA_STATUS    0x0e
+#define EMAC_BASE     0x3ff69000
+#define EMAC_MII_ADDR 0x1010
+#define EMAC_MII_DATA 0x1014
 
 static void assert_property(QTestState *qts, const char *name, bool expected)
 {
@@ -127,6 +130,7 @@ static void test_defaults(void)
     const uint8_t payload[] = { PCA_ADDRESS << 1 };
     const uint32_t commands[] = { 0, I2C_WRITE | I2C_ACK_CHECK | 1, I2C_STOP };
 
+    assert_property(qts, "emac", false);
     assert_property(qts, "pca9575", false);
     i2c_transfer(qts, payload, sizeof(payload), commands,
                  G_N_ELEMENTS(commands), true);
@@ -177,6 +181,7 @@ static void test_pca9575(void)
     };
     g_autofree char *pca_path = find_pca9575_path(qts);
 
+    assert_property(qts, "emac", false);
     assert_property(qts, "pca9575", true);
     /* Existing TMP105 temperature sensor at 0x48 must remain reachable. */
     i2c_transfer(qts, tmp105_payload, sizeof(tmp105_payload), probe_commands,
@@ -253,6 +258,59 @@ static void test_pca9575_address(void)
     qtest_quit(qts);
 }
 
+static uint16_t mdio_read(QTestState *qts, unsigned phy, unsigned reg)
+{
+    qtest_writel(qts, EMAC_BASE + EMAC_MII_ADDR,
+                 (phy << 11) | (reg << 6) | 1);
+    g_assert_cmphex(qtest_readl(qts, EMAC_BASE + EMAC_MII_ADDR) & 1, ==, 0);
+    return qtest_readl(qts, EMAC_BASE + EMAC_MII_DATA);
+}
+
+static void test_emac_default_phy(void)
+{
+    QTestState *qts = qtest_init("-machine esp32,emac=on -nic none");
+
+    g_assert_cmphex(mdio_read(qts, 0, 0), ==, 0x3100);
+    g_assert_cmphex(mdio_read(qts, 1, 0), ==, 0xffff);
+    qtest_quit(qts);
+}
+
+static void test_emac(void)
+{
+    QTestState *qts = qtest_init("-machine esp32,emac=on -nic none "
+                                "-global esp32-emac.phy-address=1");
+
+    assert_property(qts, "emac", true);
+    assert_property(qts, "pca9575", false);
+    g_assert_cmphex(mdio_read(qts, 0, 0), ==, 0xffff);
+    g_assert_cmphex(mdio_read(qts, 1, 0), ==, 0x3100);
+    qtest_writel(qts, EMAC_BASE + EMAC_MII_DATA, 0x2100);
+    qtest_writel(qts, EMAC_BASE + EMAC_MII_ADDR, (1U << 11) | 3);
+    g_assert_cmphex(mdio_read(qts, 1, 0), ==, 0x2100);
+    qtest_writel(qts, EMAC_BASE + EMAC_MII_DATA, 0x8000);
+    qtest_writel(qts, EMAC_BASE + EMAC_MII_ADDR, (1U << 11) | 3);
+    g_assert_cmphex(mdio_read(qts, 1, 0), ==, 0x3100);
+    qtest_writel(qts, EMAC_BASE + 0x0810, 0x0010);
+    qtest_writel(qts, EMAC_BASE + 0x1018, 0x1234);
+    g_assert_cmphex(qtest_readl(qts, EMAC_BASE + 0x1018), ==, 0x1234);
+    qtest_writel(qts, EMAC_BASE, 1);
+    g_assert_cmphex(qtest_readl(qts, EMAC_BASE) & 1, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, EMAC_BASE + 0x1018), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, EMAC_BASE + 0x0810), ==, 0x0010);
+    g_assert_cmphex(mdio_read(qts, 1, 0), ==, 0x3100);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    qtest_qmp_eventwait(qts, "RESET");
+    g_assert_cmphex(qtest_readl(qts, EMAC_BASE + 0x0810), ==, 0);
+    {
+        QDict *response = qtest_qmp(qts,
+            "{'execute':'qom-set', 'arguments':{'path':'/machine',"
+            "'property':'emac', 'value':false}}");
+        g_assert(qdict_haskey(response, "error"));
+        qobject_unref(response);
+    }
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -261,6 +319,9 @@ int main(int argc, char **argv)
         qtest_add_func("/esp32/peripherals/pca9575", test_pca9575);
         qtest_add_func("/esp32/peripherals/pca9575-address",
                        test_pca9575_address);
+        qtest_add_func("/esp32/peripherals/emac-default-phy",
+                       test_emac_default_phy);
+        qtest_add_func("/esp32/peripherals/emac", test_emac);
     }
     return g_test_run();
 }
