@@ -1,8 +1,23 @@
 Classic ESP32 optional peripherals
 ==================================
 
-The ``esp32`` machine can attach an optional I2C GPIO expander. Existing
-invocations retain no GPIO expander and the existing TMP105.
+The ``esp32`` machine can select native Ethernet and an I2C GPIO expander
+without a separate product-specific machine type. Existing invocations retain
+the OpenETH backend, no GPIO expander, and zero default PSRAM capacity.
+
+Native Ethernet
+---------------
+
+``-machine esp32,emac=on`` replaces OpenETH with the native ESP32 EMAC at
+``0x3ff69000``. The models share a register range and are mutually exclusive.
+Attach a network backend using ``-nic user,model=esp32-emac`` or another
+supported backend. Without a backend, the device remains present with link
+down. The native model includes DMA descriptors and a limited RTL8201F MDIO
+register model; unsupported registers are not a complete PHY implementation.
+
+The PHY address defaults to zero. Override it explicitly when needed::
+
+    -machine esp32,emac=on -global esp32-emac.phy-address=1
 
 GPIO expander
 -------------
@@ -24,5 +39,5 @@ Tests
 -----
 
 ``tests/qtest/esp32-peripherals-test`` exercises default configuration,
-expander registers and reset. It requires no guest firmware, device
-provisioning, or external network.
+expander registers and reset, and native Ethernet register/MDIO behavior.
+It requires no guest firmware, device provisioning, or external network.
