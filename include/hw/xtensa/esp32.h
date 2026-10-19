@@ -24,6 +24,7 @@
 #include "hw/net/can/esp32_twai.h"
 #include "hw/sd/dwc_sdmmc.h"
 #include "hw/display/esp_rgb.h"
+#include "hw/misc/esp32_sens.h"
 
 typedef struct Esp32SocState {
     /*< private >*/
@@ -41,6 +42,7 @@ typedef struct Esp32SocState {
     Esp32GpioState gpio;
     Esp32RngState rng;
     Esp32RtcCntlState rtc_cntl;
+    Esp32SensState sens;
     Esp32FrcTimerState frc_timer[ESP32_FRC_COUNT];
     Esp32TimgState timg[ESP32_TIMG_COUNT];
     Esp32SpiState spi[ESP32_SPI_COUNT];
