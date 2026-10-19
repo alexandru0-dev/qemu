@@ -35,6 +35,13 @@ Attaching I2C slaves through ``-device`` is still restricted by this machine's
 existing detached peripheral-bus topology; these options do not change reset
 ownership or expose a new user-pluggable bus.
 
+PSRAM capacity
+--------------
+
+Explicit RAM sizes up to ``-m 8M`` select the corresponding PSRAM die capacity.
+The CPU cache window remains 4 MiB: this does not implement bank switching,
+himem, or full SPI/cache coherency for the unmapped half of an 8 MiB die.
+
 Tests
 -----
 
