@@ -25,3 +25,11 @@ The Avnet LX60/LX110/LX200 emulation supports:
 -  16550 UART
 
 -  OpenCores 10/100 Mbps Ethernet MAC
+
+Espressif ESP32 peripherals
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. toctree::
+   :maxdepth: 1
+
+   esp32-peripherals
