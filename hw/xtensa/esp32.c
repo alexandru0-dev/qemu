@@ -27,6 +27,7 @@
 #include "hw/qdev-properties.h"
 #include "hw/xtensa/esp32.h"
 #include "hw/misc/ssi_psram.h"
+#include "hw/net/esp32_emac.h"
 #include "hw/sd/dwc_sdmmc.h"
 #include "core-esp32/core-isa.h"
 #include "qemu/datadir.h"
@@ -711,6 +712,7 @@ struct Esp32MachineState {
 
     Esp32SocState esp32;
     DeviceState *flash_dev;
+    bool emac;
     bool pca9575;
     uint32_t pca9575_address;
 };
@@ -796,6 +798,21 @@ static void esp32_machine_init_openeth(Esp32SocState *ss)
     memory_region_add_subregion(sys_mem, desc_base, sysbus_mmio_get_region(sbd, 1));
 }
 
+static void esp32_machine_init_emac(Esp32SocState *ss)
+{
+    DeviceState *ethernet = qemu_create_nic_device(TYPE_ESP32_EMAC, true, NULL);
+    if (!ethernet) {
+        ethernet = qdev_new(TYPE_ESP32_EMAC);
+    }
+    ss->eth = ethernet;
+    SysBusDevice *device = SYS_BUS_DEVICE(ethernet);
+    sysbus_realize_and_unref(device, &error_fatal);
+    sysbus_connect_irq(device, 0,
+        qdev_get_gpio_in(DEVICE(&ss->intmatrix), ETS_ETH_MAC_INTR_SOURCE));
+    memory_region_add_subregion(get_system_memory(), DR_REG_EMAC_BASE,
+                                sysbus_mmio_get_region(device, 0));
+}
+
 static void esp32_machine_init_sd(Esp32SocState *ss)
 {
     DriveInfo *dinfo = drive_get(IF_SD, 0, 0);
@@ -849,7 +866,11 @@ static void esp32_machine_init(MachineState *machine)
 
     esp32_machine_init_i2c(ss, ms);
 
-    esp32_machine_init_openeth(ss);
+    if (ms->emac) {
+        esp32_machine_init_emac(ss);
+    } else {
+        esp32_machine_init_openeth(ss);
+    }
 
     esp32_machine_init_sd(ss);
 
@@ -942,6 +963,21 @@ static ram_addr_t esp32_fixup_ram_size(ram_addr_t requested_size)
     return size;
 }
 
+static bool esp32_machine_get_emac(Object *obj, Error **errp)
+{
+    return ESP32_MACHINE(obj)->emac;
+}
+
+static void esp32_machine_set_emac(Object *obj, bool value, Error **errp)
+{
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp,
+                   "emac cannot be changed after machine initialization");
+        return;
+    }
+    ESP32_MACHINE(obj)->emac = value;
+}
+
 static bool esp32_machine_get_pca9575(Object *obj, Error **errp)
 {
     return ESP32_MACHINE(obj)->pca9575;
@@ -1000,6 +1036,10 @@ static void esp32_machine_class_init(ObjectClass *oc, void *data)
     mc->default_ram_size = 0;
     mc->fixup_ram_size = esp32_fixup_ram_size;
 
+    object_property_set_default_bool(object_class_property_add_bool(oc, "emac",
+        esp32_machine_get_emac, esp32_machine_set_emac), false);
+    object_class_property_set_description(oc, "emac",
+        "Use native ESP32 EMAC instead of OpenETH");
     object_property_set_default_bool(
         object_class_property_add_bool(oc, "pca9575",
             esp32_machine_get_pca9575, esp32_machine_set_pca9575), false);
