@@ -956,9 +956,11 @@ static ram_addr_t esp32_fixup_ram_size(ram_addr_t requested_size)
         size = 2 * MiB;
     } else if (requested_size <= 4 * MiB ) {
         size = 4 * MiB;
+    } else if (requested_size <= 8 * MiB) {
+        size = 8 * MiB;
     } else {
-        qemu_log("RAM size larger than 4 MB not supported\n");
-        size = 4 * MiB;
+        qemu_log("RAM size larger than 8 MB not supported\n");
+        size = 8 * MiB;
     }
     return size;
 }
