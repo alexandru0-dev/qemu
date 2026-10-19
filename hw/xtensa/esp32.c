@@ -14,6 +14,7 @@
 #include "qemu/error-report.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/hw.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
@@ -710,6 +711,8 @@ struct Esp32MachineState {
 
     Esp32SocState esp32;
     DeviceState *flash_dev;
+    bool pca9575;
+    uint32_t pca9575_address;
 };
 #define TYPE_ESP32_MACHINE MACHINE_TYPE_NAME("esp32")
 
@@ -754,7 +757,7 @@ static void esp32_machine_init_psram(Esp32SocState *ss, uint32_t size_mbytes)
                                 qdev_get_gpio_in_named(psram, SSI_GPIO_CS, 0));
 }
 
-static void esp32_machine_init_i2c(Esp32SocState *s)
+static void esp32_machine_init_i2c(Esp32SocState *s, Esp32MachineState *ms)
 {
     /* It should be possible to create an I2C device from the command line,
      * however for this to work the I2C bus must be reachable from sysbus-default.
@@ -767,6 +770,9 @@ static void esp32_machine_init_i2c(Esp32SocState *s)
     I2CBus* i2c_bus = I2C_BUS(qdev_get_child_bus(i2c_master, "i2c"));
     I2CSlave* tmp105 = i2c_slave_create_simple(i2c_bus, "tmp105", 0x48);
     object_property_set_int(OBJECT(tmp105), "temperature", 25 * 1000, &error_fatal);
+    if (ms->pca9575) {
+        i2c_slave_create_simple(i2c_bus, "pca9575", ms->pca9575_address);
+    }
 }
 
 static void esp32_machine_init_openeth(Esp32SocState *ss)
@@ -841,7 +847,7 @@ static void esp32_machine_init(MachineState *machine)
         esp32_machine_init_psram(ss, (uint32_t) (machine->ram_size / MiB));
     }
 
-    esp32_machine_init_i2c(ss);
+    esp32_machine_init_i2c(ss, ms);
 
     esp32_machine_init_openeth(ss);
 
@@ -936,6 +942,53 @@ static ram_addr_t esp32_fixup_ram_size(ram_addr_t requested_size)
     return size;
 }
 
+static bool esp32_machine_get_pca9575(Object *obj, Error **errp)
+{
+    return ESP32_MACHINE(obj)->pca9575;
+}
+
+static void esp32_machine_set_pca9575(Object *obj, bool value, Error **errp)
+{
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp,
+                   "pca9575 cannot be changed after machine initialization");
+        return;
+    }
+    ESP32_MACHINE(obj)->pca9575 = value;
+}
+
+static void esp32_machine_get_pca9575_address(
+    Object *obj, Visitor *visitor, const char *name, void *opaque, Error **errp)
+{
+    uint32_t address = ESP32_MACHINE(obj)->pca9575_address;
+
+    visit_type_uint32(visitor, name, &address, errp);
+}
+
+static void esp32_machine_set_pca9575_address(
+    Object *obj, Visitor *visitor, const char *name, void *opaque, Error **errp)
+{
+    uint32_t address;
+
+    if (!visit_type_uint32(visitor, name, &address, errp)) {
+        return;
+    }
+    if (address > 0x7f) {
+        error_setg(errp, "pca9575-address must be a 7-bit I2C address");
+        return;
+    }
+    if (address == 0x48) {
+        error_setg(errp, "pca9575-address 0x48 is already used by TMP105");
+        return;
+    }
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp,
+                   "pca9575-address cannot be changed after machine initialization");
+        return;
+    }
+    ESP32_MACHINE(obj)->pca9575_address = address;
+}
+
 /* Initialize machine type */
 static void esp32_machine_class_init(ObjectClass *oc, void *data)
 {
@@ -946,6 +999,17 @@ static void esp32_machine_class_init(ObjectClass *oc, void *data)
     mc->default_cpus = 2;
     mc->default_ram_size = 0;
     mc->fixup_ram_size = esp32_fixup_ram_size;
+
+    object_property_set_default_bool(
+        object_class_property_add_bool(oc, "pca9575",
+            esp32_machine_get_pca9575, esp32_machine_set_pca9575), false);
+    object_class_property_set_description(oc, "pca9575",
+        "Attach a PCA9575 GPIO expander to I2C0");
+    object_property_set_default_uint(object_class_property_add(oc,
+        "pca9575-address", "uint32", esp32_machine_get_pca9575_address,
+        esp32_machine_set_pca9575_address, NULL, NULL), 0x2f);
+    object_class_property_set_description(oc, "pca9575-address",
+        "7-bit I2C address of the optional PCA9575 GPIO expander");
 }
 
 static const TypeInfo esp32_info = {
