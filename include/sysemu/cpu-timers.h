@@ -73,6 +73,9 @@ void icount_start_warp_timer(void);
 void icount_account_warp_timer(void);
 /* sleep=off: warp an idle guest to the next deadline from the vCPU thread. */
 bool icount_warp_idle_in_vcpu(void);
+/* sleep=on: sleep through an idle period on the vCPU thread, then warp. */
+int64_t icount_idle_sleep_begin(void);
+void icount_idle_sleep_end(void);
 void icount_notify_exit(void);
 
 /*

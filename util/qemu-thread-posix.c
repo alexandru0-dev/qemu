@@ -253,6 +253,27 @@ bool qemu_cond_timedwait_impl(QemuCond *cond, QemuMutex *mutex, int ms,
     return qemu_cond_timedwait_ts(cond, mutex, &ts, file, line);
 }
 
+bool qemu_cond_timedwait_ns_impl(QemuCond *cond, QemuMutex *mutex, int64_t ns,
+                                 const char *file, const int line)
+{
+    const int64_t max_ns = (int64_t)INT_MAX * 1000000;
+    struct timespec ts;
+
+    if (ns < 0) {
+        ns = 0;
+    } else if (ns > max_ns) {
+        ns = max_ns;
+    }
+    clock_gettime(qemu_timedwait_clockid(), &ts);
+    ts.tv_sec += ns / 1000000000;
+    ts.tv_nsec += ns % 1000000000;
+    if (ts.tv_nsec >= 1000000000) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000;
+    }
+    return qemu_cond_timedwait_ts(cond, mutex, &ts, file, line);
+}
+
 void qemu_sem_init(QemuSemaphore *sem, int init)
 {
     qemu_mutex_init(&sem->mutex);
