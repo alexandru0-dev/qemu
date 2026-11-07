@@ -225,16 +225,24 @@ static void *rr_cpu_thread_fn(void *arg)
             qatomic_set(&cpu->exit_request, false);
         }
 
-        if (icount_enabled() && all_cpu_threads_idle()) {
+        if (icount_enabled() && all_cpu_threads_idle() &&
+            icount_warp_idle_in_vcpu()) {
             /*
-             * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
-             * in the main_loop, wake it up in order to start the warp timer.
+             * The clock now stands at the next deadline; run the due timers
+             * below, which wake the CPU or move the deadline on.
              */
-            qemu_notify_event();
-        }
+        } else {
+            if (icount_enabled() && all_cpu_threads_idle()) {
+                /*
+                 * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
+                 * in the main_loop, wake it up in order to start the warp timer.
+                 */
+                qemu_notify_event();
+            }
 
-        rr_wait_io_event();
-        rr_deal_with_unplugged_cpus();
+            rr_wait_io_event();
+            rr_deal_with_unplugged_cpus();
+        }
 
         bql_unlock();
         replay_mutex_lock();
