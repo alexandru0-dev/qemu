@@ -44,6 +44,11 @@ typedef struct Esp32CacheRegionState {
     bool synced;
     bool synced_decrypt;
     unsigned int synced_write_gen;
+    /*
+     * Cache state as the guest set it; mem stays mapped when
+     * lazy-cache-disable is enabled
+     */
+    bool cache_on;
 } Esp32CacheRegionState;
 
 #define ESP32_CACHE_PAGE_UNLOADED       0xffff
@@ -67,6 +72,7 @@ typedef struct Esp32DportState {
 
     MemoryRegion iomem;
     bool has_psram;
+    bool lazy_cache_disable;
     int cpu_count;
     Esp32CacheState cache_state[ESP32_CPU_COUNT];
     MemoryRegion psram;         /* Shared between the CPUs: the actual memory region for PSRAM */

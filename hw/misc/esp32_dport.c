@@ -318,6 +318,28 @@ static void esp32_cache_invalidate_all_entries(Esp32CacheRegionState* crs)
     }
 }
 
+/*
+ * Map or unmap a cache region as the guest turns it on or off. A region turned
+ * back on is synced with flash first; pages that changed are reloaded and their
+ * TBs invalidated. With lazy-cache-disable, turning a region off leaves it
+ * mapped: the guest turns the cache off around every flash operation, and each
+ * map change rebuilds every address space. The guest must not read through a
+ * disabled cache (the hardware raises a cache error), so only such buggy reads
+ * see a difference: stale flash data instead of the illegal-access trap.
+ */
+static void esp32_cache_region_set(Esp32CacheRegionState *crs, bool on)
+{
+    bool lazy = crs->cache->dport->lazy_cache_disable;
+
+    if (on && !crs->cache_on) {
+        esp32_cache_data_sync(crs);
+    }
+    crs->cache_on = on;
+    if (on || !lazy) {
+        memory_region_set_enabled(&crs->mem, on);
+    }
+}
+
 static void esp32_cache_state_update(Esp32CacheState* cs)
 {
     bool cache_enabled = FIELD_EX32(cs->cache_ctrl_reg, DPORT_PRO_CACHE_CTRL, CACHE_ENA) != 0;
@@ -329,24 +351,20 @@ static void esp32_cache_state_update(Esp32CacheState* cs)
      */
     memory_region_transaction_begin();
 
-    bool drom0_enabled = cache_enabled &&
-        FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_DROM0) == 0;
-    if (!cs->drom0.mem.enabled && drom0_enabled) {
-        esp32_cache_data_sync(&cs->drom0);
-    }
-    memory_region_set_enabled(&cs->drom0.mem, drom0_enabled);
-
-    bool iram0_enabled = cache_enabled &&
-        FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_IRAM0) == 0;
-    if (!cs->iram0.mem.enabled && iram0_enabled) {
-        esp32_cache_data_sync(&cs->iram0);
-    }
-    memory_region_set_enabled(&cs->iram0.mem, iram0_enabled);
+    esp32_cache_region_set(&cs->drom0, cache_enabled &&
+        FIELD_EX32(cs->cache_ctrl1_reg,
+                   DPORT_PRO_CACHE_CTRL1, MASK_DROM0) == 0);
+    esp32_cache_region_set(&cs->iram0, cache_enabled &&
+        FIELD_EX32(cs->cache_ctrl1_reg,
+                   DPORT_PRO_CACHE_CTRL1, MASK_IRAM0) == 0);
 
     if (cs->dport->has_psram) {
         bool dram1_enabled = cache_enabled &&
             FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_DRAM1) == 0;
-        memory_region_set_enabled(&cs->dram1.mem, dram1_enabled);
+        /* PSRAM is RAM behind an alias: nothing to sync, only the mapping. */
+        if (dram1_enabled || !cs->dport->lazy_cache_disable) {
+            memory_region_set_enabled(&cs->dram1.mem, dram1_enabled);
+        }
     }
     memory_region_transaction_commit();
 }
@@ -358,13 +376,20 @@ static void esp32_cache_region_reset(Esp32CacheRegionState *crs)
         crs->loaded_entry[i] = ESP32_CACHE_PAGE_UNLOADED;
     }
     crs->synced = false;
+    crs->cache_on = false;
     crs->illegal_access_trap_en = false;
+    memory_region_set_enabled(&crs->mem, false);
 }
 
 static void esp32_cache_reset(Esp32CacheState *cs)
 {
+    memory_region_transaction_begin();
     esp32_cache_region_reset(&cs->drom0);
     esp32_cache_region_reset(&cs->iram0);
+    if (cs->dport->has_psram) {
+        memory_region_set_enabled(&cs->dram1.mem, false);
+    }
+    memory_region_transaction_commit();
 }
 
 static uint64_t esp32_cache_ill_read(void *opaque, hwaddr addr, unsigned int size)
@@ -500,6 +525,8 @@ static void esp32_dport_init(Object *obj)
 static Property esp32_dport_properties[] = {
     DEFINE_PROP_DRIVE("flash", Esp32DportState, flash_blk),
     DEFINE_PROP_BOOL("has_psram", Esp32DportState, has_psram, false),
+    DEFINE_PROP_BOOL("lazy-cache-disable", Esp32DportState,
+                     lazy_cache_disable, false),
     DEFINE_PROP_END_OF_LIST(),
 };
 
