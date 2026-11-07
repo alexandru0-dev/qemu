@@ -36,6 +36,55 @@
 
 #ifndef CONFIG_USER_ONLY
 
+/*
+ * clock_ns_to_ticks(clk, ns) for CCOUNT, which divides a 128-bit value by the
+ * 64-bit period: a library loop of 64-bit divisions on 32-bit hosts.  CCOUNT
+ * reads are frequent and ns grows by little between them, so continue from
+ * the previous result instead: with ns = m->ns + d,
+ *   ns * 2^32 = m->ticks * period + m->rem + d * 2^32,
+ * and only (m->rem + d * 2^32) / period is new.  Its quotient is estimated
+ * from below with the reciprocal m->inv and corrected by at most three
+ * subtractions, so the result is exact, not an approximation.  Another
+ * period, a step back or a step of 2^31 ns or more takes the full division.
+ */
+static inline QEMU_ALWAYS_INLINE
+uint64_t xtensa_ccount_ticks(XtensaCcountMemo *m, uint64_t period, uint64_t ns)
+{
+    uint64_t d = ns - m->ns;
+
+    if (unlikely(period == 0)) {
+        return 0;
+    }
+    if (likely(period == m->period && ns >= m->ns && d < (1ull << 31))) {
+        uint32_t d32 = d;
+        uint64_t x = m->rem + ((uint64_t)d32 << 32);
+        /* floor(d * 2^32 * inv / 2^64) = floor(d * inv / 2^32) */
+        uint64_t q = (uint64_t)d32 * (uint32_t)(m->inv >> 32) +
+                     (((uint64_t)d32 * (uint32_t)m->inv) >> 32);
+        uint64_t rem = x - q * period;
+
+        while (rem >= period) {
+            rem -= period;
+            q++;
+        }
+        m->ns = ns;
+        m->ticks += q;
+        m->rem = rem;
+        return m->ticks;
+    } else {
+        uint64_t lo = ns << 32;
+        uint64_t hi = ns >> 32;
+
+        m->rem = divu128(&lo, &hi, period);
+        /* Periods above 2^62 (under 1 Hz) could overflow x; do not memoize. */
+        m->period = period <= (1ull << 62) ? period : 0;
+        m->inv = UINT64_MAX / period;
+        m->ns = ns;
+        m->ticks = lo;
+        return lo;
+    }
+}
+
 void HELPER(update_ccount)(CPUXtensaState *env)
 {
     XtensaCPU *cpu = env_archcpu(env);
@@ -43,7 +92,8 @@ void HELPER(update_ccount)(CPUXtensaState *env)
 
     env->ccount_time = now;
     env->sregs[CCOUNT] = env->ccount_base +
-        (uint32_t)clock_ns_to_ticks(cpu->clock, now - env->time_base);
+        (uint32_t)xtensa_ccount_ticks(&env->ccount_memo, cpu->clock->period,
+                                      now - env->time_base);
 }
 
 /*
