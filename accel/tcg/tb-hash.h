@@ -52,17 +52,21 @@ static inline unsigned int tb_jmp_cache_hash_page(vaddr pc)
 static inline unsigned int tb_jmp_cache_hash_func(vaddr pc, uint64_t cs_base,
                                                   uint32_t flags)
 {
-    vaddr tmp;
     /*
      * Multiplicative hash using xxHash32 PRIME32_1 (0x9e3779b1, derived from
      * floor(2^32 / phi)):
      * https://xxhash.com/doc/v0.8.2/group___x_x_h32__impl.html
      */
     uint32_t state = ((uint32_t)pc ^ (uint32_t)cs_base ^ flags) * PRIME32_1;
+#if TB_JMP_CACHE_PAGE_HASH
+    vaddr tmp;
 
     tmp = pc ^ (pc >> (TARGET_PAGE_BITS - TB_JMP_PAGE_BITS));
     return (((tmp >> (TARGET_PAGE_BITS - TB_JMP_PAGE_BITS)) & TB_JMP_PAGE_MASK)
            | (state >> (32 - TB_JMP_PAGE_BITS)));
+#else
+    return state >> (32 - TB_JMP_CACHE_BITS);
+#endif
 }
 
 #else

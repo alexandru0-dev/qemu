@@ -31,6 +31,18 @@
 #endif
 
 /*
+ * With a page hash, the entries of one guest page share the high bits of
+ * their index, so that a TLB page flush clears only that page's part of the
+ * cache, but each page then has only 1 << (TB_JMP_CACHE_BITS / 2) entries.
+ * Targets that reach many (pc, flags) pairs per page and rarely flush pages
+ * can define TB_JMP_CACHE_PAGE_HASH to 0 in cpu-param.h to hash over the
+ * entire cache and clear all of it on a page flush.
+ */
+#ifndef TB_JMP_CACHE_PAGE_HASH
+#define TB_JMP_CACHE_PAGE_HASH 1
+#endif
+
+/*
  * Invalidated in parallel; all accesses to 'tb' must be atomic.
  * A valid entry is read/written by a single CPU, therefore there is
  * no need for qatomic_rcu_read() and pc is always consistent with a

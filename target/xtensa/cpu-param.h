@@ -22,5 +22,6 @@
 
 #define TB_JMP_CACHE_BITS         14
 #define TB_JMP_CACHE_PCREL        0
+#define TB_JMP_CACHE_PAGE_HASH    0
 
 #endif

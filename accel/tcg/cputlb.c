@@ -159,6 +159,11 @@ static void tb_jmp_cache_clear_page(CPUState *cpu, vaddr page_addr)
     CPUJumpCache *jc = cpu->tb_jmp_cache;
     int i, i0;
 
+    if (!TB_JMP_CACHE_PAGE_HASH) {
+        /* Entries are not grouped by page: clear them all. */
+        tcg_flush_jmp_cache(cpu);
+        return;
+    }
     if (unlikely(!jc)) {
         return;
     }
@@ -557,6 +562,10 @@ static void tlb_flush_page_by_mmuidx_async_0(CPUState *cpu,
      * Discard jump cache entries for any tb which might potentially
      * overlap the flushed page, which includes the previous.
      */
+    if (!TB_JMP_CACHE_PAGE_HASH) {
+        tcg_flush_jmp_cache(cpu);
+        return;
+    }
     tb_jmp_cache_clear_page(cpu, addr - TARGET_PAGE_SIZE);
     tb_jmp_cache_clear_page(cpu, addr);
 }
@@ -747,7 +756,8 @@ static void tlb_flush_range_by_mmuidx_async_0(CPUState *cpu,
      * If the length is larger than the jump cache size, then it will take
      * longer to clear each entry individually than it will to clear it all.
      */
-    if (d.len >= (TARGET_PAGE_SIZE * TB_JMP_CACHE_SIZE)) {
+    if (!TB_JMP_CACHE_PAGE_HASH ||
+        d.len >= (TARGET_PAGE_SIZE * TB_JMP_CACHE_SIZE)) {
         tcg_flush_jmp_cache(cpu);
         return;
     }
