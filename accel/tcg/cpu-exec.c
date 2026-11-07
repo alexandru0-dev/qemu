@@ -262,7 +262,7 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, vaddr pc,
 
     tb = qatomic_read(&jc->array[hash].tb);
     if (likely(tb &&
-               jc->array[hash].pc == pc &&
+               tb_jmp_cache_pc_matches(jc, hash, tb, pc) &&
                tb->cs_base == cs_base &&
                tb->flags == flags &&
                tb_cflags(tb) == cflags)) {
@@ -274,8 +274,7 @@ static inline TranslationBlock *tb_lookup(CPUState *cpu, vaddr pc,
         return NULL;
     }
 
-    jc->array[hash].pc = pc;
-    qatomic_set(&jc->array[hash].tb, tb);
+    tb_jmp_cache_set(jc, hash, tb, pc);
 
 hit:
     /*
@@ -447,7 +446,7 @@ const void *lookup_tb_ptr_state(CPUState *cpu, vaddr pc, uint64_t cs_base,
     jc = cpu->tb_jmp_cache;
     tb = qatomic_read(&jc->array[hash].tb);
     if (likely(tb &&
-               jc->array[hash].pc == pc &&
+               tb_jmp_cache_pc_matches(jc, hash, tb, pc) &&
                tb->cs_base == cs_base &&
                tb->flags == flags &&
                tb_cflags(tb) == cpu->tcg_cflags &&
@@ -1050,8 +1049,7 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  */
                 h = tb_jmp_cache_hash_func(pc, cs_base, flags);
                 jc = cpu->tb_jmp_cache;
-                jc->array[h].pc = pc;
-                qatomic_set(&jc->array[h].tb, tb);
+                tb_jmp_cache_set(jc, h, tb, pc);
             }
 
 #ifndef CONFIG_USER_ONLY
@@ -1133,6 +1131,8 @@ bool tcg_exec_realizefn(CPUState *cpu, Error **errp)
         tcg_target_initialized = true;
     }
 
+    /* The jump cache of these targets has no room for CF_PCREL. */
+    assert(TB_JMP_CACHE_PCREL || !(cpu->tcg_cflags & CF_PCREL));
     cpu->tb_jmp_cache = g_new0(CPUJumpCache, 1);
     tlb_init(cpu);
 #ifndef CONFIG_USER_ONLY

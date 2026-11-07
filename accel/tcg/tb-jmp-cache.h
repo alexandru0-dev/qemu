@@ -11,9 +11,21 @@
 
 #include "qemu/rcu.h"
 #include "exec/cpu-common.h"
+#include "cpu-param.h"
 
 #define TB_JMP_CACHE_BITS 12
 #define TB_JMP_CACHE_SIZE (1 << TB_JMP_CACHE_BITS)
+
+/*
+ * Only CF_PCREL TBs need the pc stored in the entry; for the others it is
+ * tb->pc.  Targets that never set CF_PCREL can define TB_JMP_CACHE_PCREL to 0
+ * in cpu-param.h to keep only the TB pointer, making the cache a quarter of
+ * its size on 32-bit hosts (16 KiB instead of 64 KiB) and half on 64-bit
+ * hosts.  tcg_exec_realizefn() checks the flag.
+ */
+#ifndef TB_JMP_CACHE_PCREL
+#define TB_JMP_CACHE_PCREL 1
+#endif
 
 /*
  * Invalidated in parallel; all accesses to 'tb' must be atomic.
@@ -26,8 +38,30 @@ typedef struct CPUJumpCache {
     struct rcu_head rcu;
     struct {
         TranslationBlock *tb;
+#if TB_JMP_CACHE_PCREL
         vaddr pc;
+#endif
     } array[TB_JMP_CACHE_SIZE];
 } CPUJumpCache;
+
+/* Whether the valid entry @h holding @tb is for @pc. */
+static inline bool tb_jmp_cache_pc_matches(CPUJumpCache *jc, uint32_t h,
+                                           TranslationBlock *tb, vaddr pc)
+{
+#if TB_JMP_CACHE_PCREL
+    return jc->array[h].pc == pc;
+#else
+    return tb->pc == pc;
+#endif
+}
+
+static inline void tb_jmp_cache_set(CPUJumpCache *jc, uint32_t h,
+                                    TranslationBlock *tb, vaddr pc)
+{
+#if TB_JMP_CACHE_PCREL
+    jc->array[h].pc = pc;
+#endif
+    qatomic_set(&jc->array[h].tb, tb);
+}
 
 #endif /* ACCEL_TCG_TB_JMP_CACHE_H */
