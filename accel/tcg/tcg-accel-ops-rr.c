@@ -232,16 +232,39 @@ static void *rr_cpu_thread_fn(void *arg)
              * below, which wake the CPU or move the deadline on.
              */
         } else {
+            bool slept = false;
+
             if (icount_enabled() && all_cpu_threads_idle()) {
-                /*
-                 * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
-                 * in the main_loop, wake it up in order to start the warp timer.
-                 */
-                qemu_notify_event();
+                int64_t sleep_ns = icount_idle_sleep_begin();
+
+                if (sleep_ns >= 0) {
+                    /*
+                     * Kicks broadcast halt_cond, so an interrupt, queued work
+                     * or a new earlier timer ends the sleep early; the warp
+                     * then covers only the real time that passed.
+                     */
+                    if (sleep_ns > 0) {
+                        qemu_cond_timedwait_ns_bql(first_cpu->halt_cond,
+                                                   sleep_ns);
+                    }
+                    icount_idle_sleep_end();
+                    slept = true;
+                }
             }
 
-            rr_wait_io_event();
-            rr_deal_with_unplugged_cpus();
+            if (!slept) {
+                if (icount_enabled() && all_cpu_threads_idle()) {
+                    /*
+                     * When all cpus are sleeping (e.g in WFI), to avoid a
+                     * deadlock in the main_loop, wake it up in order to start
+                     * the warp timer.
+                     */
+                    qemu_notify_event();
+                }
+
+                rr_wait_io_event();
+                rr_deal_with_unplugged_cpus();
+            }
         }
 
         bql_unlock();

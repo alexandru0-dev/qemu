@@ -538,6 +538,23 @@ void qemu_cond_timedwait_bql(QemuCond *cond, int ms)
     qemu_cond_timedwait(cond, &bql, ms);
 }
 
+void qemu_cond_timedwait_ns_bql(QemuCond *cond, int64_t ns)
+{
+    const int64_t max_ns = (int64_t)INT_MAX * SCALE_MS;
+
+    if (ns <= 0) {
+        return;
+    }
+    if (ns > max_ns) {
+        ns = max_ns;
+    }
+#ifdef _WIN32
+    qemu_cond_timedwait(cond, &bql, DIV_ROUND_UP(ns, SCALE_MS));
+#else
+    qemu_cond_timedwait_ns_impl(cond, &bql, ns, __FILE__, __LINE__);
+#endif
+}
+
 /* signal CPU creation */
 void cpu_thread_signal_created(CPUState *cpu)
 {

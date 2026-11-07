@@ -275,7 +275,8 @@ static int64_t icount_pace_lag_locked(int64_t clock)
     return lag;
 }
 
-static void icount_warp_rt(void)
+/* Ends a pending idle warp; returns false if none was pending. */
+static bool icount_warp_rt_account(void)
 {
     unsigned seq;
     int64_t warp_start;
@@ -291,7 +292,7 @@ static void icount_warp_rt(void)
     } while (seqlock_read_retry(&timers_state.vm_clock_seqlock, seq));
 
     if (warp_start == -1) {
-        return;
+        return false;
     }
 
     deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
@@ -330,10 +331,69 @@ static void icount_warp_rt(void)
     timers_state.vm_clock_warp_start = -1;
     seqlock_write_unlock(&timers_state.vm_clock_seqlock,
                        &timers_state.vm_clock_lock);
+    return true;
+}
 
-    if (qemu_clock_expired(QEMU_CLOCK_VIRTUAL)) {
+static void icount_warp_rt(void)
+{
+    if (icount_warp_rt_account() && qemu_clock_expired(QEMU_CLOCK_VIRTUAL)) {
         qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
     }
+}
+
+/*
+ * sleep=on counterpart of icount_warp_idle_in_vcpu(): the vCPU thread sleeps
+ * through an idle period itself instead of waking the main loop to arm the warp
+ * timer and waiting for it to warp and kick back. It starts the warp as
+ * icount_start_warp_timer() would and returns the real time to sleep, including
+ * the pacing correction; it then waits on its halt condition, which kicks still
+ * interrupt, and calls icount_idle_sleep_end(). The warp only covers real time
+ * that passed, so an early wake-up leaves the rest for the next idle period.
+ *
+ * Returns -1, leaving idle periods to the main loop, unless icount is precise
+ * and sleeps, record/replay and align are off, the VM runs, and a timer is
+ * pending.
+ */
+int64_t icount_idle_sleep_begin(void)
+{
+    int64_t clock, deadline, sleep_ns;
+
+    if (!icount_sleep || icount_enabled() != ICOUNT_PRECISE ||
+        icount_align_option || replay_mode != REPLAY_MODE_NONE ||
+        !runstate_is_running()) {
+        return -1;
+    }
+
+    /* As in icount_warp_idle_in_vcpu(), zero is another AioContext's timer. */
+    deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                          ~QEMU_TIMER_ATTR_EXTERNAL);
+    if (deadline <= 0) {
+        return -1;
+    }
+
+    clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT);
+    sleep_ns = deadline;
+    seqlock_write_lock(&timers_state.vm_clock_seqlock,
+                       &timers_state.vm_clock_lock);
+    if (timers_state.vm_clock_warp_start == -1
+        || timers_state.vm_clock_warp_start > clock) {
+        timers_state.vm_clock_warp_start = clock;
+    }
+    if (icount_pace_enabled()) {
+        sleep_ns -= icount_pace_lag_locked(clock);
+    }
+    seqlock_write_unlock(&timers_state.vm_clock_seqlock,
+                         &timers_state.vm_clock_lock);
+    return MAX(sleep_ns, 0);
+}
+
+/*
+ * Ends the warp after the sleep. The vCPU loop runs the timers now due, so the
+ * main loop is not notified.
+ */
+void icount_idle_sleep_end(void)
+{
+    icount_warp_rt_account();
 }
 
 static void icount_timer_cb(void *opaque)

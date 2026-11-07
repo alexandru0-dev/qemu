@@ -424,6 +424,12 @@ void qemu_cond_wait_bql(QemuCond *cond);
  */
 void qemu_cond_timedwait_bql(QemuCond *cond, int ms);
 
+/*
+ * qemu_cond_timedwait_ns_bql: like qemu_cond_timedwait_bql, with a timeout in
+ * nanoseconds (rounded up to milliseconds on Windows)
+ */
+void qemu_cond_timedwait_ns_bql(QemuCond *cond, int64_t ns);
+
 /* internal interfaces */
 
 #define qemu_bh_new_guarded(cb, opaque, guard) \
