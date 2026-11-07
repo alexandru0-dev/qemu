@@ -20,6 +20,7 @@
 /* Xtensa processors have a weak memory model */
 #define TCG_GUEST_DEFAULT_MO      (0)
 
+#define TB_JMP_CACHE_BITS         14
 #define TB_JMP_CACHE_PCREL        0
 
 #endif

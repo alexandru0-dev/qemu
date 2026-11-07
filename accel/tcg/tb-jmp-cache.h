@@ -13,15 +13,18 @@
 #include "exec/cpu-common.h"
 #include "cpu-param.h"
 
+#ifndef TB_JMP_CACHE_BITS
 #define TB_JMP_CACHE_BITS 12
+#endif
 #define TB_JMP_CACHE_SIZE (1 << TB_JMP_CACHE_BITS)
 
 /*
  * Only CF_PCREL TBs need the pc stored in the entry; for the others it is
  * tb->pc.  Targets that never set CF_PCREL can define TB_JMP_CACHE_PCREL to 0
- * in cpu-param.h to keep only the TB pointer, making the cache a quarter of
- * its size on 32-bit hosts (16 KiB instead of 64 KiB) and half on 64-bit
- * hosts.  tcg_exec_realizefn() checks the flag.
+ * in cpu-param.h to keep only the TB pointer, making each entry a quarter of
+ * its size on 32-bit hosts and half on 64-bit hosts.  Targets may also
+ * override TB_JMP_CACHE_BITS in cpu-param.h.  tcg_exec_realizefn() checks
+ * CF_PCREL.
  */
 #ifndef TB_JMP_CACHE_PCREL
 #define TB_JMP_CACHE_PCREL 1
