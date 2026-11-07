@@ -398,25 +398,12 @@ static inline bool check_for_breakpoints(CPUState *cpu, vaddr pc,
  * If found, return the code pointer.  If not found, return
  * the tcg epilogue so that we return into cpu_tb_exec.
  */
-const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+static G_GNUC_NO_INLINE const void *
+lookup_tb_ptr_slow(CPUState *cpu, vaddr pc, uint64_t cs_base, uint32_t flags)
 {
-    CPUState *cpu = env_cpu(env);
     TranslationBlock *tb;
-    vaddr pc;
-    uint64_t cs_base;
-    uint32_t flags, cflags;
+    uint32_t cflags = curr_cflags(cpu);
 
-    /*
-     * By definition we've just finished a TB, so I/O is OK.
-     * Avoid the possibility of calling cpu_io_recompile() if
-     * a page table walk triggered by tb_lookup() calling
-     * probe_access_internal() happens to touch an MMIO device.
-     * The next TB, if we chain to it, will clear the flag again.
-     */
-    cpu->neg.can_do_io = true;
-    cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
-
-    cflags = curr_cflags(cpu);
     if (check_for_breakpoints(cpu, pc, &cflags)) {
         cpu_loop_exit(cpu);
     }
@@ -431,6 +418,49 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     }
 
     return tb->tc.ptr;
+}
+
+const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+{
+    CPUState *cpu = env_cpu(env);
+    CPUJumpCache *jc;
+    TranslationBlock *tb;
+    vaddr pc;
+    uint64_t cs_base;
+    uint32_t flags, hash;
+
+    /*
+     * By definition we've just finished a TB, so I/O is OK.
+     * Avoid the possibility of calling cpu_io_recompile() if
+     * a page table walk triggered by tb_lookup() calling
+     * probe_access_internal() happens to touch an MMIO device.
+     * The next TB, if we chain to it, will clear the flag again.
+     */
+    cpu->neg.can_do_io = true;
+    cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+
+    /*
+     * Fast path, without a stack frame or calls: a jump cache hit when
+     * curr_cflags() would return tcg_cflags unchanged (no single-step,
+     * one-insn-per-TB, nochain logging, breakpoints or exec logging).
+     * Everything else takes the original path.
+     */
+    hash = tb_jmp_cache_hash_func(pc, cs_base, flags);
+    jc = cpu->tb_jmp_cache;
+    tb = qatomic_read(&jc->array[hash].tb);
+    if (likely(tb &&
+               jc->array[hash].pc == pc &&
+               tb->cs_base == cs_base &&
+               tb->flags == flags &&
+               tb_cflags(tb) == cpu->tcg_cflags &&
+               !cpu->singlestep_enabled &&
+               QTAILQ_EMPTY(&cpu->breakpoints) &&
+               !qatomic_read(&one_insn_per_tb) &&
+               !qemu_loglevel_mask(CPU_LOG_TB_NOCHAIN | CPU_LOG_TB_CPU |
+                                   CPU_LOG_EXEC))) {
+        return tb->tc.ptr;
+    }
+    return lookup_tb_ptr_slow(cpu, pc, cs_base, flags);
 }
 
 /* Execute a TB, and fix up the CPU state afterwards if necessary */

@@ -750,18 +750,31 @@ static inline uint32_t xtensa_replicate_windowstart(CPUXtensaState *env)
 
 #include "exec/cpu-all.h"
 
-static inline void cpu_get_tb_cpu_state(CPUXtensaState *env, vaddr *pc,
-                                        uint64_t *cs_base, uint32_t *flags)
+/*
+ * Called for every TB lookup. The state is read into locals and the outputs
+ * are written once at the end: stores through the output pointers would
+ * otherwise make the compiler reload env->config and its options after each.
+ */
+static inline QEMU_ALWAYS_INLINE
+void cpu_get_tb_cpu_state(CPUXtensaState *env, vaddr *pc,
+                          uint64_t *cs_base, uint32_t *flags)
 {
-    *pc = env->pc;
-    *cs_base = 0;
-    *flags = 0;
-    *flags |= xtensa_get_ring(env);
-    if (env->sregs[PS] & PS_EXCM) {
-        *flags |= XTENSA_TBFLAG_EXCM;
-    } else if (xtensa_option_enabled(env->config, XTENSA_OPTION_LOOP)) {
-        target_ulong lend_dist =
-            env->sregs[LEND] - (env->pc & -(1u << TARGET_PAGE_BITS));
+    const XtensaConfig *config = env->config;
+    const uint64_t options = config->options;
+    const uint32_t ps = env->sregs[PS];
+    const uint32_t env_pc = env->pc;
+    uint64_t cs = 0;
+    uint32_t f = 0;
+
+    if (options & (XTENSA_OPTION_BIT(XTENSA_OPTION_MMU) |
+                   XTENSA_OPTION_BIT(XTENSA_OPTION_MPU))) {
+        f |= (ps & PS_RING) >> PS_RING_SHIFT;
+    }
+    if (ps & PS_EXCM) {
+        f |= XTENSA_TBFLAG_EXCM;
+    } else if (options & XTENSA_OPTION_BIT(XTENSA_OPTION_LOOP)) {
+        uint32_t lend = env->sregs[LEND];
+        target_ulong lend_dist = lend - (env_pc & -(1u << TARGET_PAGE_BITS));
 
         /*
          * 0 in the csbase_lend field means that there may not be a loopback
@@ -777,45 +790,54 @@ static inline void cpu_get_tb_cpu_state(CPUXtensaState *env, vaddr *pc,
          * the previous page. lend_dist will be encoded as TARGET_PAGE_SIZE
          * for the TB that contains this instruction.
          */
-        if (lend_dist < (1u << TARGET_PAGE_BITS) + env->config->max_insn_size) {
-            target_ulong lbeg_off = env->sregs[LEND] - env->sregs[LBEG];
+        if (lend_dist < (1u << TARGET_PAGE_BITS) + config->max_insn_size) {
+            target_ulong lbeg_off = lend - env->sregs[LBEG];
 
-            *cs_base = lend_dist;
+            cs = lend_dist;
             if (lbeg_off < 256) {
-                *cs_base |= lbeg_off << XTENSA_CSBASE_LBEG_OFF_SHIFT;
+                cs |= lbeg_off << XTENSA_CSBASE_LBEG_OFF_SHIFT;
             }
         }
     }
-    if (xtensa_option_enabled(env->config, XTENSA_OPTION_EXTENDED_L32R) &&
+    if ((options & XTENSA_OPTION_BIT(XTENSA_OPTION_EXTENDED_L32R)) &&
             (env->sregs[LITBASE] & 1)) {
-        *flags |= XTENSA_TBFLAG_LITBASE;
+        f |= XTENSA_TBFLAG_LITBASE;
     }
-    if (xtensa_option_enabled(env->config, XTENSA_OPTION_DEBUG)) {
-        if (xtensa_get_cintlevel(env) < env->config->debug_level) {
-            *flags |= XTENSA_TBFLAG_DEBUG;
+    if (options & XTENSA_OPTION_BIT(XTENSA_OPTION_DEBUG)) {
+        int cintlevel = (ps & PS_INTLEVEL) >> PS_INTLEVEL_SHIFT;
+
+        if ((ps & PS_EXCM) && config->excm_level > cintlevel) {
+            cintlevel = config->excm_level;
         }
-        if (xtensa_get_cintlevel(env) < env->sregs[ICOUNTLEVEL]) {
-            *flags |= XTENSA_TBFLAG_ICOUNT;
+        if (cintlevel < config->debug_level) {
+            f |= XTENSA_TBFLAG_DEBUG;
+        }
+        if (cintlevel < env->sregs[ICOUNTLEVEL]) {
+            f |= XTENSA_TBFLAG_ICOUNT;
         }
     }
-    if (xtensa_option_enabled(env->config, XTENSA_OPTION_COPROCESSOR)) {
-        *flags |= env->sregs[CPENABLE] << XTENSA_TBFLAG_CPENABLE_SHIFT;
+    if (options & XTENSA_OPTION_BIT(XTENSA_OPTION_COPROCESSOR)) {
+        f |= env->sregs[CPENABLE] << XTENSA_TBFLAG_CPENABLE_SHIFT;
     }
-    if (xtensa_option_enabled(env->config, XTENSA_OPTION_WINDOWED_REGISTER) &&
-        (env->sregs[PS] & (PS_WOE | PS_EXCM)) == PS_WOE) {
-        uint32_t windowstart = xtensa_replicate_windowstart(env) >>
+    if ((options & XTENSA_OPTION_BIT(XTENSA_OPTION_WINDOWED_REGISTER)) &&
+        (ps & (PS_WOE | PS_EXCM)) == PS_WOE) {
+        uint32_t ws = env->sregs[WINDOW_START];
+        uint32_t windowstart = (ws | (ws << config->nareg / 4)) >>
             (env->sregs[WINDOW_BASE] + 1);
         uint32_t w = ctz32(windowstart | 0x8);
 
-        *flags |= (w << XTENSA_TBFLAG_WINDOW_SHIFT) | XTENSA_TBFLAG_CWOE;
-        *flags |= extract32(env->sregs[PS], PS_CALLINC_SHIFT,
-                            PS_CALLINC_LEN) << XTENSA_TBFLAG_CALLINC_SHIFT;
+        f |= (w << XTENSA_TBFLAG_WINDOW_SHIFT) | XTENSA_TBFLAG_CWOE;
+        f |= extract32(ps, PS_CALLINC_SHIFT,
+                       PS_CALLINC_LEN) << XTENSA_TBFLAG_CALLINC_SHIFT;
     } else {
-        *flags |= 3 << XTENSA_TBFLAG_WINDOW_SHIFT;
+        f |= 3 << XTENSA_TBFLAG_WINDOW_SHIFT;
     }
     if (env->yield_needed) {
-        *flags |= XTENSA_TBFLAG_YIELD;
+        f |= XTENSA_TBFLAG_YIELD;
     }
+    *pc = env_pc;
+    *cs_base = cs;
+    *flags = f;
 }
 
 XtensaCPU *xtensa_cpu_create_with_clock(const char *cpu_type,
