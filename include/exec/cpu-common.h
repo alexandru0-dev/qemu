@@ -220,6 +220,15 @@ bool cpu_restore_state(CPUState *cpu, uintptr_t host_pc);
 
 G_NORETURN void cpu_loop_exit_noexc(CPUState *cpu);
 G_NORETURN void cpu_loop_exit_atomic(CPUState *cpu, uintptr_t pc);
+
+/*
+ * tcg_lookup_tb_ptr: helper_lookup_tb_ptr with the next TB's state given.
+ * @pc, @cs_base and @flags must equal what cpu_get_tb_cpu_state() returns
+ * for the CPU state at the call.  Returns the host code of the matching TB
+ * or the epilogue, for tcg_gen_goto_ptr().
+ */
+const void *tcg_lookup_tb_ptr(CPUState *cpu, vaddr pc, uint64_t cs_base,
+                              uint32_t flags);
 #endif /* CONFIG_TCG */
 G_NORETURN void cpu_loop_exit(CPUState *cpu);
 G_NORETURN void cpu_loop_exit_restore(CPUState *cpu, uintptr_t pc);

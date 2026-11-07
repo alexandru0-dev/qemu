@@ -743,6 +743,15 @@ static inline uint32_t xtensa_replicate_windowstart(CPUXtensaState *env)
 #define XTENSA_TBFLAG_CALLINC_MASK 0x180000
 #define XTENSA_TBFLAG_CALLINC_SHIFT 19
 
+/*
+ * Not TB flags: requests in the flags that translated code passes to the
+ * helpers that look the next TB up (see lookup_next_tb in win_helper.c).
+ * XTENSA_LOOKUP_WINDOW: compute the window field, which is zero in the
+ * passed flags; XTENSA_LOOKUP_LOOP: compute cs_base from LBEG and LEND.
+ */
+#define XTENSA_LOOKUP_WINDOW 0x40000000
+#define XTENSA_LOOKUP_LOOP 0x80000000
+
 #define XTENSA_CSBASE_LEND_MASK 0x0000ffff
 #define XTENSA_CSBASE_LEND_SHIFT 0
 #define XTENSA_CSBASE_LBEG_OFF_MASK 0x00ff0000

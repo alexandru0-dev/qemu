@@ -420,14 +420,13 @@ lookup_tb_ptr_slow(CPUState *cpu, vaddr pc, uint64_t cs_base, uint32_t flags)
     return tb->tc.ptr;
 }
 
-const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+static inline QEMU_ALWAYS_INLINE
+const void *lookup_tb_ptr_state(CPUState *cpu, vaddr pc, uint64_t cs_base,
+                                uint32_t flags)
 {
-    CPUState *cpu = env_cpu(env);
     CPUJumpCache *jc;
     TranslationBlock *tb;
-    vaddr pc;
-    uint64_t cs_base;
-    uint32_t flags, hash;
+    uint32_t hash;
 
     /*
      * By definition we've just finished a TB, so I/O is OK.
@@ -437,7 +436,6 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
      * The next TB, if we chain to it, will clear the flag again.
      */
     cpu->neg.can_do_io = true;
-    cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
 
     /*
      * Fast path, without a stack frame or calls: a jump cache hit when
@@ -461,6 +459,26 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
         return tb->tc.ptr;
     }
     return lookup_tb_ptr_slow(cpu, pc, cs_base, flags);
+}
+
+const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
+{
+    vaddr pc;
+    uint64_t cs_base;
+    uint32_t flags;
+
+    cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+    return lookup_tb_ptr_state(env_cpu(env), pc, cs_base, flags);
+}
+
+/*
+ * helper_lookup_tb_ptr for a target helper that already knows the next
+ * TB's pc, cs_base and flags, which must equal cpu_get_tb_cpu_state().
+ */
+const void *tcg_lookup_tb_ptr(CPUState *cpu, vaddr pc, uint64_t cs_base,
+                              uint32_t flags)
+{
+    return lookup_tb_ptr_state(cpu, pc, cs_base, flags);
 }
 
 /* Execute a TB, and fix up the CPU state afterwards if necessary */

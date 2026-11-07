@@ -48,6 +48,15 @@ struct DisasContext {
     bool single_op;
     /* The instruction being translated contains ENTRY. */
     bool entry;
+    /*
+     * The flags for helper_lookup_next_tb after the instruction being
+     * translated, valid if next_flags_known: tb_next_flags as adjusted by
+     * that instruction.  tb_next_flags is the TB's flags without YIELD, with
+     * XTENSA_LOOKUP_LOOP if the next TB's cs_base may be nonzero.
+     */
+    bool next_flags_known;
+    uint32_t next_flags;
+    uint32_t tb_next_flags;
     xtensa_insnbuf_word insnbuf[MAX_INSNBUF_LENGTH];
     xtensa_insnbuf_word slotbuf[MAX_INSNBUF_LENGTH];
 };

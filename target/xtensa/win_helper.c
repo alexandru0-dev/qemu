@@ -27,6 +27,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/error-report.h"
 #include "cpu.h"
 #include "exec/helper-proto.h"
 #include "qemu/host-utils.h"
@@ -277,6 +278,88 @@ void HELPER(retw_checked)(CPUXtensaState *env, uint32_t pc)
     env->sregs[WINDOW_START] &= ~(1u << env->sregs[WINDOW_BASE]);
     rotate_window_abs_inline(env, env->sregs[WINDOW_BASE] -
                              ((env->regs[0] >> 30) & 0x3));
+}
+
+/*
+ * helper_lookup_tb_ptr for a jump to @pc whose other effects on the TB
+ * flags are known at translate time.  Within a TB the flag-relevant state
+ * only changes in the instruction that ends it, so @flags is the TB's own
+ * flags as adjusted by the translator for that instruction, plus the
+ * XTENSA_LOOKUP_* requests for what it cannot know: the window field after
+ * a window rotation and cs_base, which depends on the target page.  YIELD
+ * is read here, as other code may set it at any time.
+ */
+static inline QEMU_ALWAYS_INLINE
+const void *lookup_next_tb(CPUXtensaState *env, uint32_t pc, uint32_t flags)
+{
+    uint64_t cs_base = 0;
+
+    if (flags & XTENSA_LOOKUP_WINDOW) {
+        uint32_t ws = env->sregs[WINDOW_START];
+        uint32_t windowstart = (ws | (ws << env->config->nareg / 4)) >>
+            (env->sregs[WINDOW_BASE] + 1);
+
+        flags |= ctz32(windowstart | 0x8) << XTENSA_TBFLAG_WINDOW_SHIFT;
+    }
+    if (flags & XTENSA_LOOKUP_LOOP) {
+        uint32_t lend = env->sregs[LEND];
+        uint32_t lend_dist = lend - (pc & TARGET_PAGE_MASK);
+
+        if (lend_dist < TARGET_PAGE_SIZE + env->config->max_insn_size) {
+            uint32_t lbeg_off = lend - env->sregs[LBEG];
+
+            cs_base = lend_dist;
+            if (lbeg_off < 256) {
+                cs_base |= lbeg_off << XTENSA_CSBASE_LBEG_OFF_SHIFT;
+            }
+        }
+    }
+    flags &= ~(XTENSA_LOOKUP_WINDOW | XTENSA_LOOKUP_LOOP);
+    if (env->yield_needed) {
+        flags |= XTENSA_TBFLAG_YIELD;
+    }
+#ifdef CONFIG_DEBUG_TCG
+    {
+        vaddr full_pc;
+        uint64_t full_cs_base;
+        uint32_t full_flags;
+
+        cpu_get_tb_cpu_state(env, &full_pc, &full_cs_base, &full_flags);
+        if (full_pc != pc || full_cs_base != cs_base || full_flags != flags) {
+            error_report("xtensa: next TB state mismatch: pc %08x/%08x "
+                         "cs_base %"PRIx64"/%"PRIx64" flags %08x/%08x",
+                         pc, (uint32_t)full_pc, cs_base, full_cs_base,
+                         flags, full_flags);
+            abort();
+        }
+    }
+#endif
+    return tcg_lookup_tb_ptr(env_cpu(env), pc, cs_base, flags);
+}
+
+const void *HELPER(lookup_next_tb)(CPUXtensaState *env, uint32_t pc,
+                                   uint32_t flags)
+{
+    return lookup_next_tb(env, pc, flags);
+}
+
+/*
+ * retw_checked followed by the jump to the return address and the lookup of
+ * the TB there, in one call.  @flags carries XTENSA_LOOKUP_WINDOW.
+ */
+const void *HELPER(retw_lookup)(CPUXtensaState *env, uint32_t pc,
+                                uint32_t flags)
+{
+    uint32_t a0 = env->regs[0];
+    uint32_t next_pc = (pc & 0xc0000000) | (a0 & 0x3fffffff);
+
+    test_ill_retw_inline(env, pc);
+    test_underflow_retw_inline(env, pc);
+    env->sregs[WINDOW_START] &= ~(1u << env->sregs[WINDOW_BASE]);
+    rotate_window_abs_inline(env, env->sregs[WINDOW_BASE] -
+                             ((a0 >> 30) & 0x3));
+    env->pc = next_pc;
+    return lookup_next_tb(env, next_pc, flags);
 }
 
 /* entry followed by the window rotation gen_postprocess would emit. */

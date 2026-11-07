@@ -330,6 +330,25 @@ static bool gen_check_cpenable(DisasContext *dc, uint32_t cp_mask)
 
 static int gen_postprocess(DisasContext *dc, int slot);
 
+/*
+ * Whether a jump that is not chained may use helper_lookup_next_tb (or
+ * helper_retw_lookup) with dc->next_flags instead of helper_lookup_tb_ptr.
+ */
+static bool gen_lookup_next_tb_ok(DisasContext *dc)
+{
+    return dc->next_flags_known && !dc->icount &&
+        !(dc->op_flags & XTENSA_OP_POSTPROCESS) &&
+        !(tb_cflags(dc->base.tb) & CF_NO_GOTO_PTR) &&
+        !dc->base.plugin_enabled;
+}
+
+/* Flags after an instruction that changes the window field. */
+static void gen_next_flags_window(DisasContext *dc)
+{
+    dc->next_flags = (dc->next_flags & ~XTENSA_TBFLAG_WINDOW_MASK) |
+        XTENSA_LOOKUP_WINDOW;
+}
+
 static void gen_jump_slot(DisasContext *dc, TCGv dest, int slot)
 {
     tcg_gen_mov_i32(cpu_pc, dest);
@@ -342,6 +361,16 @@ static void gen_jump_slot(DisasContext *dc, TCGv dest, int slot)
     if (slot >= 0) {
         tcg_gen_goto_tb(slot);
         tcg_gen_exit_tb(dc->base.tb, slot);
+    } else if (gen_lookup_next_tb_ok(dc)) {
+        /*
+         * The translator knows the next TB's flags: look it up without
+         * recomputing them from the whole CPU state.
+         */
+        TCGv_ptr ptr = tcg_temp_new_ptr();
+
+        gen_helper_lookup_next_tb(ptr, tcg_env, cpu_pc,
+                                  tcg_constant_i32(dc->next_flags));
+        tcg_gen_goto_ptr(ptr);
     } else {
         /*
          * helper_lookup_tb_ptr recomputes pc, cs_base and flags from the CPU
@@ -375,6 +404,10 @@ static void gen_callw_slot(DisasContext *dc, int callinc, TCGv_i32 dest,
 {
     tcg_gen_deposit_i32(cpu_SR[PS], cpu_SR[PS],
             tcg_constant_i32(callinc), PS_CALLINC_SHIFT, PS_CALLINC_LEN);
+    if (dc->next_flags & XTENSA_TBFLAG_CWOE) {
+        dc->next_flags = (dc->next_flags & ~XTENSA_TBFLAG_CALLINC_MASK) |
+            (callinc << XTENSA_TBFLAG_CALLINC_SHIFT);
+    }
     tcg_gen_movi_i32(cpu_R[callinc << 2],
             (callinc << 30) | (dc->base.pc_next & 0x3fffffff));
     gen_jump_slot(dc, dest, slot);
@@ -425,6 +458,9 @@ static void gen_jump_after_entry(DisasContext *dc)
     TCGv_i32 sh;
     TCGLabel *miss;
 
+    /* ENTRY changes only the window field: the lookups below may use it. */
+    dc->next_flags_known = true;
+    gen_next_flags_window(dc);
     if (dest == dc->lend || !translator_use_goto_tb(&dc->base, dest)) {
         gen_jumpi_check_loop_end(dc, -1);
         return;
@@ -1153,6 +1189,15 @@ static void disas_xtensa_insn(CPUXtensaState *env, DisasContext *dc)
 
     dc->op_flags = op_flags;
     dc->entry = false;
+    /*
+     * Instructions that change the TB flags in other ways than handled below
+     * end the TB with one of these, and their jumps use a full lookup.
+     */
+    dc->next_flags_known = !(op_flags & (XTENSA_OP_EXIT_TB_M1 |
+                                         XTENSA_OP_EXIT_TB_0 |
+                                         XTENSA_OP_CHECK_INTERRUPTS |
+                                         XTENSA_OP_SYNC_REGISTER_WINDOW));
+    dc->next_flags = dc->tb_next_flags;
 
     for (slot = 0; slot < slots; ++slot) {
         struct slot_prop *pslot = ordered[slot];
@@ -1208,6 +1253,11 @@ static void xtensa_tr_init_disas_context(DisasContextBase *dcbase,
     dc->cwoe = tb_flags & XTENSA_TBFLAG_CWOE;
     dc->callinc = ((tb_flags & XTENSA_TBFLAG_CALLINC_MASK) >>
                    XTENSA_TBFLAG_CALLINC_SHIFT);
+    dc->tb_next_flags = tb_flags & ~XTENSA_TBFLAG_YIELD;
+    if (!(tb_flags & XTENSA_TBFLAG_EXCM) &&
+        option_enabled(dc, XTENSA_OPTION_LOOP)) {
+        dc->tb_next_flags |= XTENSA_LOOKUP_LOOP;
+    }
     init_sar_tracker(dc);
 }
 
@@ -2095,6 +2145,17 @@ static void translate_retw(DisasContext *dc, const OpcodeArg arg[],
 {
     TCGv_i32 tmp = tcg_temp_new();
 
+    gen_next_flags_window(dc);
+    if (dc->single_op && gen_lookup_next_tb_ok(dc)) {
+        /* retw_checked, then the jump and the next TB's lookup, in one call. */
+        TCGv_ptr ptr = tcg_temp_new_ptr();
+
+        gen_helper_retw_lookup(ptr, tcg_env, tcg_constant_i32(dc->pc),
+                               tcg_constant_i32(dc->next_flags));
+        tcg_gen_goto_ptr(ptr);
+        dc->base.is_jmp = DISAS_NORETURN;
+        return;
+    }
     if (dc->single_op) {
         /*
          * One helper call instead of three: the illegal-instruction and
