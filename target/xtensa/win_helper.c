@@ -91,7 +91,8 @@ void xtensa_sync_phys_from_window(CPUXtensaState *env)
  * the overlapping registers in env->regs, so only the quads leaving the window
  * are written back and only the quads entering it are loaded.
  */
-static void xtensa_rotate_window_abs(CPUXtensaState *env, uint32_t position)
+static inline QEMU_ALWAYS_INLINE
+void rotate_window_abs_inline(CPUXtensaState *env, uint32_t position)
 {
     uint32_t nquad = env->config->nareg / 4;
     uint32_t old = env->sregs[WINDOW_BASE];
@@ -142,6 +143,11 @@ static void xtensa_rotate_window_abs(CPUXtensaState *env, uint32_t position)
     }
 }
 
+static void xtensa_rotate_window_abs(CPUXtensaState *env, uint32_t position)
+{
+    rotate_window_abs_inline(env, position);
+}
+
 void xtensa_rotate_window(CPUXtensaState *env, uint32_t delta)
 {
     xtensa_rotate_window_abs(env, env->sregs[WINDOW_BASE] + delta);
@@ -152,13 +158,19 @@ void HELPER(sync_windowbase)(CPUXtensaState *env)
     xtensa_rotate_window_abs(env, env->windowbase_next);
 }
 
-void HELPER(entry)(CPUXtensaState *env, uint32_t pc, uint32_t s, uint32_t imm)
+static inline QEMU_ALWAYS_INLINE
+void entry_inline(CPUXtensaState *env, uint32_t s, uint32_t imm)
 {
     int callinc = (env->sregs[PS] & PS_CALLINC) >> PS_CALLINC_SHIFT;
 
     env->regs[(callinc << 2) | (s & 3)] = env->regs[s] - imm;
     env->windowbase_next = env->sregs[WINDOW_BASE] + callinc;
     env->sregs[WINDOW_START] |= windowstart_bit(env->windowbase_next, env);
+}
+
+void HELPER(entry)(CPUXtensaState *env, uint32_t pc, uint32_t s, uint32_t imm)
+{
+    entry_inline(env, s, imm);
 }
 
 void HELPER(window_check)(CPUXtensaState *env, uint32_t pc, uint32_t w)
@@ -188,7 +200,8 @@ void HELPER(window_check)(CPUXtensaState *env, uint32_t pc, uint32_t w)
     }
 }
 
-void HELPER(test_ill_retw)(CPUXtensaState *env, uint32_t pc)
+static inline QEMU_ALWAYS_INLINE
+void test_ill_retw_inline(CPUXtensaState *env, uint32_t pc)
 {
     int n = (env->regs[0] >> 30) & 0x3;
     int m = 0;
@@ -211,7 +224,13 @@ void HELPER(test_ill_retw)(CPUXtensaState *env, uint32_t pc)
     }
 }
 
-void HELPER(test_underflow_retw)(CPUXtensaState *env, uint32_t pc)
+void HELPER(test_ill_retw)(CPUXtensaState *env, uint32_t pc)
+{
+    test_ill_retw_inline(env, pc);
+}
+
+static inline QEMU_ALWAYS_INLINE
+void test_underflow_retw_inline(CPUXtensaState *env, uint32_t pc)
 {
     int n = (env->regs[0] >> 30) & 0x3;
 
@@ -235,6 +254,11 @@ void HELPER(test_underflow_retw)(CPUXtensaState *env, uint32_t pc)
     }
 }
 
+void HELPER(test_underflow_retw)(CPUXtensaState *env, uint32_t pc)
+{
+    test_underflow_retw_inline(env, pc);
+}
+
 void HELPER(retw)(CPUXtensaState *env, uint32_t a0)
 {
     int n = (a0 >> 30) & 0x3;
@@ -243,22 +267,24 @@ void HELPER(retw)(CPUXtensaState *env, uint32_t a0)
 }
 
 /*
- * test_ill_retw, test_underflow_retw and retw of a single-op RETW in one call.
+ * test_ill_retw, test_underflow_retw and retw of a single-op RETW in one call,
+ * with the checks and the window rotation inlined.
  */
 void HELPER(retw_checked)(CPUXtensaState *env, uint32_t pc)
 {
-    HELPER(test_ill_retw)(env, pc);
-    HELPER(test_underflow_retw)(env, pc);
+    test_ill_retw_inline(env, pc);
+    test_underflow_retw_inline(env, pc);
     env->sregs[WINDOW_START] &= ~(1u << env->sregs[WINDOW_BASE]);
-    HELPER(retw)(env, env->regs[0]);
+    rotate_window_abs_inline(env, env->sregs[WINDOW_BASE] -
+                             ((env->regs[0] >> 30) & 0x3));
 }
 
 /* entry followed by the window rotation gen_postprocess would emit. */
 void HELPER(entry_rotate)(CPUXtensaState *env, uint32_t pc, uint32_t s,
                           uint32_t imm)
 {
-    HELPER(entry)(env, pc, s, imm);
-    HELPER(sync_windowbase)(env);
+    entry_inline(env, s, imm);
+    rotate_window_abs_inline(env, env->windowbase_next);
 }
 
 void xtensa_restore_owb(CPUXtensaState *env)
