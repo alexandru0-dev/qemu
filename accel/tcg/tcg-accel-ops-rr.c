@@ -290,6 +290,15 @@ static void *rr_cpu_thread_fn(void *arg)
             qatomic_set_mb(&cpu->exit_request, 0);
         }
 
+        if (icount_enabled() && all_cpu_threads_idle() &&
+            icount_warp_idle_in_vcpu()) {
+            /*
+             * The clock now stands at the next deadline; the top of the loop
+             * runs the due timers, which wake the CPU or move the deadline on.
+             */
+            continue;
+        }
+
         if (icount_enabled() && all_cpu_threads_idle()) {
             /*
              * When all cpus are sleeping (e.g in WFI), to avoid a deadlock

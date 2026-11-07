@@ -344,6 +344,44 @@ static void icount_timer_cb(void *opaque)
     icount_warp_rt();
 }
 
+/*
+ * With sleep=off an idle warp only moves QEMU_CLOCK_VIRTUAL to the next
+ * deadline. The vCPU thread holds the BQL when it finds every CPU idle, so it
+ * can do that itself instead of waking the main loop, sleeping, and waiting
+ * for the main loop to warp and kick it back: two context switches and a
+ * main-loop pass per guest idle period. The caller runs the timers now due.
+ *
+ * Returns false, leaving the warp to the main loop, when sleeping is enabled,
+ * in record/replay, when the VM is not running, or when no timer is pending.
+ */
+bool icount_warp_idle_in_vcpu(void)
+{
+    int64_t deadline;
+
+    if (icount_sleep || replay_mode != REPLAY_MODE_NONE ||
+        !runstate_is_running()) {
+        return false;
+    }
+
+    /*
+     * The vCPU loop has just run the main loop's due timers, so a deadline of
+     * zero is a timer only another AioContext runs: wait for it the usual way
+     * rather than spin.
+     */
+    deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                          ~QEMU_TIMER_ATTR_EXTERNAL);
+    if (deadline <= 0) {
+        return false;
+    }
+    seqlock_write_lock(&timers_state.vm_clock_seqlock,
+                       &timers_state.vm_clock_lock);
+    qatomic_set_i64(&timers_state.qemu_icount_bias,
+                    timers_state.qemu_icount_bias + deadline);
+    seqlock_write_unlock(&timers_state.vm_clock_seqlock,
+                         &timers_state.vm_clock_lock);
+    return true;
+}
+
 void icount_start_warp_timer(void)
 {
     int64_t clock;
