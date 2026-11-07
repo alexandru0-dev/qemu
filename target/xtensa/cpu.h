@@ -351,6 +351,19 @@ typedef struct XtensaCcompareTimer {
     QEMUTimer *timer;
 } XtensaCcompareTimer;
 
+/*
+ * Memo of the last CCOUNT conversion: ticks = floor(ns * 2^32 / period),
+ * modulo 2^64, with ns * 2^32 == ticks * period + rem.  inv is
+ * floor((2^64 - 1) / period).  See xtensa_ccount_ticks().
+ */
+typedef struct XtensaCcountMemo {
+    uint64_t period;
+    uint64_t inv;
+    uint64_t ns;
+    uint64_t ticks;
+    uint64_t rem;
+} XtensaCcountMemo;
+
 typedef struct XtensaMemory {
     unsigned num;
     struct XtensaMemoryRegion {
@@ -541,6 +554,7 @@ struct CPUArchState {
     uint64_t time_base;
     uint64_t ccount_time;
     uint32_t ccount_base;
+    XtensaCcountMemo ccount_memo;
 #endif
 
     int yield_needed;
