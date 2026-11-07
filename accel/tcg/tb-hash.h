@@ -46,16 +46,23 @@ static inline unsigned int tb_jmp_cache_hash_page(vaddr pc)
  * The CPU state that selects a TB goes into the bits that vary within a page,
  * so that one PC reached in several states can keep several entries.  Clearing
  * a page by its TB_JMP_PAGE_MASK bits still covers all of them.
+ * Mix the PC with that state before multiplying: using only its xor-folded
+ * low bits leaves repeated instruction layouts competing for the same slots.
  */
 static inline unsigned int tb_jmp_cache_hash_func(vaddr pc, uint64_t cs_base,
                                                   uint32_t flags)
 {
     vaddr tmp;
-    uint32_t state = ((uint32_t)cs_base ^ flags) * 0x9e3779b1u;
+    /*
+     * Multiplicative hash using xxHash32 PRIME32_1 (0x9e3779b1, derived from
+     * floor(2^32 / phi)):
+     * https://xxhash.com/doc/v0.8.2/group___x_x_h32__impl.html
+     */
+    uint32_t state = ((uint32_t)pc ^ (uint32_t)cs_base ^ flags) * PRIME32_1;
 
     tmp = pc ^ (pc >> (TARGET_PAGE_BITS - TB_JMP_PAGE_BITS));
     return (((tmp >> (TARGET_PAGE_BITS - TB_JMP_PAGE_BITS)) & TB_JMP_PAGE_MASK)
-           | ((tmp ^ (state >> (32 - TB_JMP_PAGE_BITS))) & TB_JMP_ADDR_MASK));
+           | (state >> (32 - TB_JMP_PAGE_BITS)));
 }
 
 #else
