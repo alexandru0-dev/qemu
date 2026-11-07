@@ -48,6 +48,8 @@ struct DisasContext {
     bool single_op;
     /* The instruction being translated contains ENTRY. */
     bool entry;
+    /* The instruction being translated writes PS (WSR.PS or XSR.PS). */
+    bool ps_write;
     /*
      * The flags for helper_lookup_next_tb after the instruction being
      * translated, valid if next_flags_known: tb_next_flags as adjusted by

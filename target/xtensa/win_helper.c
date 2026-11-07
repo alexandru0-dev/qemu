@@ -337,6 +337,23 @@ const void *lookup_next_tb(CPUXtensaState *env, uint32_t pc, uint32_t flags)
     return tcg_lookup_tb_ptr(env_cpu(env), pc, cs_base, flags);
 }
 
+#ifdef CONFIG_DEBUG_TCG
+/* Checks a chained jump that relies on the TB flags being @flags. */
+void HELPER(check_next_tb)(CPUXtensaState *env, uint32_t pc, uint32_t flags)
+{
+    vaddr full_pc;
+    uint64_t full_cs_base;
+    uint32_t full_flags;
+
+    cpu_get_tb_cpu_state(env, &full_pc, &full_cs_base, &full_flags);
+    if (full_flags != flags) {
+        error_report("xtensa: chained TB flags mismatch at %08x: %08x/%08x",
+                     pc, flags, full_flags);
+        abort();
+    }
+}
+#endif
+
 const void *HELPER(lookup_next_tb)(CPUXtensaState *env, uint32_t pc,
                                    uint32_t flags)
 {

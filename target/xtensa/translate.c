@@ -480,6 +480,62 @@ static void gen_jump_after_entry(DisasContext *dc)
     gen_jump_slot(dc, tcg_constant_i32(dest), -1);
 }
 
+/*
+ * WSR.PS and XSR.PS end the TB because the TB flags derive from PS, but
+ * they usually leave those flags as they were (for example when a critical
+ * section restores the interrupt level).  As after ENTRY, test at run time
+ * that the PS fields the flags depend on give this TB's flags and chain to
+ * the next TB if so; otherwise look it up.  Pending interrupts were already
+ * checked by gen_postprocess.  Only TBs without EXCM and ICOUNT are handled:
+ * in them the flags depend on PS through RING, EXCM, WOE, CALLINC (if WOE)
+ * and, with the debug option, INTLEVEL against DEBUGLEVEL and ICOUNTLEVEL.
+ * The window field depends on WOE and EXCM, the rest on other registers.
+ */
+static void gen_jump_after_ps_write(DisasContext *dc)
+{
+    uint32_t dest = dc->base.pc_next;
+    uint32_t mask = PS_EXCM | PS_WOE;
+    uint32_t want = 0;
+    TCGLabel *miss;
+    TCGv_i32 tmp;
+
+    if (dest == dc->lend || !translator_use_goto_tb(&dc->base, dest) ||
+        (dc->base.tb->flags & (XTENSA_TBFLAG_EXCM | XTENSA_TBFLAG_ICOUNT))) {
+        gen_jumpi_check_loop_end(dc, -1);
+        return;
+    }
+    if (dc->cwoe) {
+        mask |= PS_CALLINC;
+        want |= PS_WOE | (dc->callinc << PS_CALLINC_SHIFT);
+    }
+    if (option_enabled(dc, XTENSA_OPTION_MMU) ||
+        option_enabled(dc, XTENSA_OPTION_MPU)) {
+        mask |= PS_RING;
+        want |= dc->ring << PS_RING_SHIFT;
+    }
+    miss = gen_new_label();
+    tmp = tcg_temp_new_i32();
+    tcg_gen_andi_i32(tmp, cpu_SR[PS], mask);
+    tcg_gen_brcondi_i32(TCG_COND_NE, tmp, want, miss);
+    if (option_enabled(dc, XTENSA_OPTION_DEBUG)) {
+        /* Without EXCM the current interrupt level is PS.INTLEVEL. */
+        tcg_gen_andi_i32(tmp, cpu_SR[PS], PS_INTLEVEL);
+        tcg_gen_brcondi_i32(dc->debug ? TCG_COND_GEU : TCG_COND_LTU, tmp,
+                            dc->config->debug_level << PS_INTLEVEL_SHIFT,
+                            miss);
+        /* ICOUNT stays clear while INTLEVEL >= ICOUNTLEVEL. */
+        tcg_gen_shri_i32(tmp, tmp, PS_INTLEVEL_SHIFT);
+        tcg_gen_brcond_i32(TCG_COND_LTU, tmp, cpu_SR[ICOUNTLEVEL], miss);
+    }
+#ifdef CONFIG_DEBUG_TCG
+    gen_helper_check_next_tb(tcg_env, tcg_constant_i32(dc->pc),
+                             tcg_constant_i32(dc->base.tb->flags));
+#endif
+    gen_jump_slot(dc, tcg_constant_i32(dest), 0);
+    gen_set_label(miss);
+    gen_jump_slot(dc, tcg_constant_i32(dest), -1);
+}
+
 static void gen_brcond(DisasContext *dc, TCGCond cond,
                        TCGv_i32 t0, TCGv_i32 t1, uint32_t addr)
 {
@@ -1189,6 +1245,7 @@ static void disas_xtensa_insn(CPUXtensaState *env, DisasContext *dc)
 
     dc->op_flags = op_flags;
     dc->entry = false;
+    dc->ps_write = false;
     /*
      * Instructions that change the TB flags in other ways than handled below
      * end the TB with one of these, and their jumps use a full lookup.
@@ -1212,6 +1269,10 @@ static void disas_xtensa_insn(CPUXtensaState *env, DisasContext *dc)
         if (dc->entry && op_flags == (XTENSA_OP_EXIT_TB_M1 |
                                       XTENSA_OP_SYNC_REGISTER_WINDOW)) {
             gen_jump_after_entry(dc);
+        } else if (dc->ps_write &&
+                   (op_flags & ~XTENSA_OP_PRIVILEGED) ==
+                   (XTENSA_OP_EXIT_TB_M1 | XTENSA_OP_CHECK_INTERRUPTS)) {
+            gen_jump_after_ps_write(dc);
         } else if (op_flags & XTENSA_OP_EXIT_TB_M1) {
             /* Change in mmu index, memory mapping or tb->flags; exit tb */
             gen_jumpi_check_loop_end(dc, -1);
@@ -2728,6 +2789,7 @@ static void translate_wsr_ps(DisasContext *dc, const OpcodeArg arg[],
         mask |= PS_RING;
     }
     tcg_gen_andi_i32(cpu_SR[par[0]], arg[0].in, mask);
+    dc->ps_write = true;
 #endif
 }
 
