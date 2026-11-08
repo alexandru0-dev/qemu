@@ -207,16 +207,36 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
     /*
      * Manage can_do_io for the translation block: set to false before
      * the first insn and set to true before the last insn.
+     *
+     * Every TB starts with can_do_io true: cpu_tb_exec and cpu_loop_exit
+     * reset it after a TB, the lookup helpers set it before goto_ptr, and a
+     * chained TB was entered from one that set it before its last insn. So the
+     * pair is only needed when an insn before the last can reach I/O, which
+     * takes a guest memory access or a helper call: the ops flagged
+     * TCG_OPF_CALL_CLOBBER. Otherwise, as in every single-insn TB, skip both
+     * stores; short guest blocks without loads, stores or helpers are common.
      */
     if (db->num_insns == 1) {
         tcg_debug_assert(first_insn_start == db->insn_start);
     } else {
+        bool io_before_last = false;
+        TCGOp *op;
+
         tcg_debug_assert(first_insn_start != db->insn_start);
-        tcg_ctx->emit_before_op = first_insn_start;
-        set_can_do_io(db, false);
+        for (op = first_insn_start; op != db->insn_start;
+             op = QTAILQ_NEXT(op, link)) {
+            if (tcg_op_defs[op->opc].flags & TCG_OPF_CALL_CLOBBER) {
+                io_before_last = true;
+                break;
+            }
+        }
+        if (io_before_last) {
+            tcg_ctx->emit_before_op = first_insn_start;
+            set_can_do_io(db, false);
+            tcg_ctx->emit_before_op = db->insn_start;
+            set_can_do_io(db, true);
+        }
     }
-    tcg_ctx->emit_before_op = db->insn_start;
-    set_can_do_io(db, true);
     tcg_ctx->emit_before_op = NULL;
 
     /* May be used by disas_log or plugin callbacks. */
