@@ -650,7 +650,17 @@ static bool gen_window_check(DisasContext *dc, uint32_t mask)
         TCGv_i32 pc = tcg_constant_i32(dc->pc);
         TCGv_i32 w = tcg_constant_i32(r / 4);
 
-        gen_helper_window_check(tcg_env, pc, w);
+        if (!dc->icount &&
+            !(tb_cflags(dc->base.tb) & CF_NO_GOTO_PTR) &&
+            !dc->base.plugin_enabled) {
+            /* Enter the overflow handler and jump to it from here. */
+            TCGv_ptr ptr = tcg_temp_new_ptr();
+
+            gen_helper_window_check_lookup(ptr, tcg_env, pc, w);
+            tcg_gen_goto_ptr(ptr);
+        } else {
+            gen_helper_window_check(tcg_env, pc, w);
+        }
         dc->base.is_jmp = DISAS_NORETURN;
         return false;
     }

@@ -33,6 +33,7 @@
 #include "qemu/host-utils.h"
 #include "qemu/atomic.h"
 #include "exec/exec-all.h"
+#include "sysemu/replay.h"
 
 void HELPER(exception)(CPUXtensaState *env, uint32_t excp)
 {
@@ -315,6 +316,40 @@ bool xtensa_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
         xtensa_cpu_do_interrupt(cs);
         return true;
     }
+    return false;
+}
+
+/*
+ * Enter window exception @excp, whose EXCCAUSE/EPC1/PS effects the caller
+ * has made, without leaving the translated code: what
+ * xtensa_cpu_do_exception_lockless would do after cpu_loop_exit.  Returns
+ * false when the exception has to go through the CPU loop: single-step
+ * (which reports the vector to the debugger), record/replay, an interrupt
+ * state that check_interrupts must update, or no vector.  Pending
+ * interrupts and exit requests are still seen by the next TB's entry.
+ */
+bool xtensa_window_exception_direct(CPUXtensaState *env, int excp)
+{
+    CPUState *cs = env_cpu(env);
+    uint32_t vector = env->config->exception_vector[excp];
+
+    if (!vector || cs->singlestep_enabled ||
+        replay_mode != REPLAY_MODE_NONE ||
+        !xtensa_interrupts_unchanged(env)) {
+        return false;
+    }
+    qemu_log_mask(CPU_LOG_INT, "%s(%d) "
+                  "pc = %08x, a0 = %08x, ps = %08x, ccount = %08x\n",
+                  __func__, excp, env->pc, env->regs[0], env->sregs[PS],
+                  env->sregs[CCOUNT]);
+    env->pc = relocated_vector(env, vector);
+    return true;
+}
+
+#else
+
+bool xtensa_window_exception_direct(CPUXtensaState *env, int excp)
+{
     return false;
 }
 

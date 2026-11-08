@@ -653,6 +653,7 @@ qemu_irq xtensa_get_runstall(CPUXtensaState *env);
 void xtensa_sync_window_from_phys(CPUXtensaState *env);
 void xtensa_sync_phys_from_window(CPUXtensaState *env);
 void xtensa_rotate_window(CPUXtensaState *env, uint32_t delta);
+bool xtensa_window_exception_direct(CPUXtensaState *env, int excp);
 void xtensa_restore_owb(CPUXtensaState *env);
 void debug_exception_env(CPUXtensaState *new_env, uint32_t cause);
 

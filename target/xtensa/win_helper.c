@@ -133,7 +133,9 @@ void HELPER(entry)(CPUXtensaState *env, uint32_t pc, uint32_t s, uint32_t imm)
     entry_inline(env, s, imm);
 }
 
-void HELPER(window_check)(CPUXtensaState *env, uint32_t pc, uint32_t w)
+/* The window overflow before the insn at @pc; returns the exception. */
+static inline QEMU_ALWAYS_INLINE
+int window_overflow_enter(CPUXtensaState *env, uint32_t pc, uint32_t w)
 {
     uint32_t windowbase = windowbase_bound(env->sregs[WINDOW_BASE], env);
     uint32_t windowstart = xtensa_replicate_windowstart(env) >>
@@ -149,15 +151,43 @@ void HELPER(window_check)(CPUXtensaState *env, uint32_t pc, uint32_t w)
 
     switch (ctz32(windowstart >> n)) {
     case 0:
-        HELPER(exception)(env, EXC_WINDOW_OVERFLOW4);
-        break;
+        return EXC_WINDOW_OVERFLOW4;
     case 1:
-        HELPER(exception)(env, EXC_WINDOW_OVERFLOW8);
-        break;
+        return EXC_WINDOW_OVERFLOW8;
     default:
-        HELPER(exception)(env, EXC_WINDOW_OVERFLOW12);
-        break;
+        return EXC_WINDOW_OVERFLOW12;
     }
+}
+
+void HELPER(window_check)(CPUXtensaState *env, uint32_t pc, uint32_t w)
+{
+    HELPER(exception)(env, window_overflow_enter(env, pc, w));
+}
+
+/* The TB at the current CPU state, for goto_ptr. */
+static const void *lookup_current_tb(CPUXtensaState *env)
+{
+    vaddr pc;
+    uint64_t cs_base;
+    uint32_t flags;
+
+    cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+    return tcg_lookup_tb_ptr_inline(env_cpu(env), pc, cs_base, flags);
+}
+
+/*
+ * window_check that enters the overflow handler without leaving the
+ * translated code when it can, and returns the TB there for goto_ptr.
+ */
+const void *HELPER(window_check_lookup)(CPUXtensaState *env, uint32_t pc,
+                                        uint32_t w)
+{
+    int excp = window_overflow_enter(env, pc, w);
+
+    if (!xtensa_window_exception_direct(env, excp)) {
+        HELPER(exception)(env, excp);
+    }
+    return lookup_current_tb(env);
 }
 
 static inline QEMU_ALWAYS_INLINE
@@ -189,13 +219,17 @@ void HELPER(test_ill_retw)(CPUXtensaState *env, uint32_t pc)
     test_ill_retw_inline(env, pc);
 }
 
+/*
+ * The window underflow check of RETW at @pc: on underflow, makes the
+ * exception's effects and returns it, otherwise returns 0.
+ */
 static inline QEMU_ALWAYS_INLINE
-void test_underflow_retw_inline(CPUXtensaState *env, uint32_t pc)
+int test_underflow_retw_inline(CPUXtensaState *env, uint32_t pc)
 {
     int n = (env->regs[0] >> 30) & 0x3;
 
-    if (!(env->sregs[WINDOW_START] &
-          windowstart_bit(env->sregs[WINDOW_BASE] - n, env))) {
+    if (unlikely(!(env->sregs[WINDOW_START] &
+                   windowstart_bit(env->sregs[WINDOW_BASE] - n, env)))) {
         uint32_t windowbase = windowbase_bound(env->sregs[WINDOW_BASE], env);
 
         xtensa_rotate_window(env, -n);
@@ -205,18 +239,29 @@ void test_underflow_retw_inline(CPUXtensaState *env, uint32_t pc)
         env->sregs[EPC1] = env->pc = pc;
 
         if (n == 1) {
-            HELPER(exception)(env, EXC_WINDOW_UNDERFLOW4);
+            return EXC_WINDOW_UNDERFLOW4;
         } else if (n == 2) {
-            HELPER(exception)(env, EXC_WINDOW_UNDERFLOW8);
+            return EXC_WINDOW_UNDERFLOW8;
         } else if (n == 3) {
-            HELPER(exception)(env, EXC_WINDOW_UNDERFLOW12);
+            return EXC_WINDOW_UNDERFLOW12;
         }
+    }
+    return 0;
+}
+
+static inline QEMU_ALWAYS_INLINE
+void raise_underflow_retw(CPUXtensaState *env, uint32_t pc)
+{
+    int excp = test_underflow_retw_inline(env, pc);
+
+    if (excp) {
+        HELPER(exception)(env, excp);
     }
 }
 
 void HELPER(test_underflow_retw)(CPUXtensaState *env, uint32_t pc)
 {
-    test_underflow_retw_inline(env, pc);
+    raise_underflow_retw(env, pc);
 }
 
 void HELPER(retw)(CPUXtensaState *env, uint32_t a0)
@@ -233,7 +278,7 @@ void HELPER(retw)(CPUXtensaState *env, uint32_t a0)
 void HELPER(retw_checked)(CPUXtensaState *env, uint32_t pc)
 {
     test_ill_retw_inline(env, pc);
-    test_underflow_retw_inline(env, pc);
+    raise_underflow_retw(env, pc);
     env->sregs[WINDOW_START] &= ~(1u << env->sregs[WINDOW_BASE]);
     rotate_window_abs_inline(env, env->sregs[WINDOW_BASE] -
                              ((env->regs[0] >> 30) & 0x3));
@@ -329,8 +374,17 @@ const void *HELPER(retw_lookup)(CPUXtensaState *env, uint32_t pc,
     uint32_t a0 = env->regs[0];
     uint32_t next_pc = (pc & 0xc0000000) | (a0 & 0x3fffffff);
 
+    int excp;
+
     test_ill_retw_inline(env, pc);
-    test_underflow_retw_inline(env, pc);
+    excp = test_underflow_retw_inline(env, pc);
+    if (unlikely(excp)) {
+        /* Enter the underflow handler, through the CPU loop if need be. */
+        if (!xtensa_window_exception_direct(env, excp)) {
+            HELPER(exception)(env, excp);
+        }
+        return lookup_current_tb(env);
+    }
     env->sregs[WINDOW_START] &= ~(1u << env->sregs[WINDOW_BASE]);
     rotate_window_abs_inline(env, env->sregs[WINDOW_BASE] -
                              ((a0 >> 30) & 0x3));

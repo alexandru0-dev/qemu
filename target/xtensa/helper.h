@@ -16,6 +16,7 @@ DEF_HELPER_3(check_next_tb, void, env, i32, i32)
 #endif
 DEF_HELPER_4(entry_rotate, void, env, i32, i32, i32)
 DEF_HELPER_3(window_check, noreturn, env, i32, i32)
+DEF_HELPER_3(window_check_lookup, cptr, env, i32, i32)
 DEF_HELPER_1(restore_owb, void, env)
 DEF_HELPER_2(movsp, void, env, i32)
 #ifndef CONFIG_USER_ONLY
