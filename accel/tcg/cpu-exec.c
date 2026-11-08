@@ -38,6 +38,7 @@
 #include "exec/helper-proto-common.h"
 #include "tb-jmp-cache.h"
 #include "tb-hash.h"
+#include "tb-lookup.h"
 #include "tb-context.h"
 #include "internal-common.h"
 #include "internal-target.h"
@@ -392,7 +393,7 @@ static inline bool check_for_breakpoints(CPUState *cpu, vaddr pc,
 
 /*
  * Recompute cpu->tb_lookup_cflags: curr_cflags() unchanged and no
- * breakpoints or exec logging, which lookup_tb_ptr_slow() handles.
+ * breakpoints or exec logging, which tcg_lookup_tb_ptr_slow() handles.
  */
 static void update_tb_lookup_cflags(CPUState *cpu)
 {
@@ -416,8 +417,9 @@ static void update_tb_lookup_cflags(CPUState *cpu)
  * If found, return the code pointer.  If not found, return
  * the tcg epilogue so that we return into cpu_tb_exec.
  */
-static G_GNUC_NO_INLINE const void *
-lookup_tb_ptr_slow(CPUState *cpu, vaddr pc, uint64_t cs_base, uint32_t flags)
+G_GNUC_NO_INLINE const void *
+tcg_lookup_tb_ptr_slow(CPUState *cpu, vaddr pc, uint64_t cs_base,
+                       uint32_t flags)
 {
     TranslationBlock *tb;
     uint32_t cflags = curr_cflags(cpu);
@@ -439,43 +441,6 @@ lookup_tb_ptr_slow(CPUState *cpu, vaddr pc, uint64_t cs_base, uint32_t flags)
     return tb->tc.ptr;
 }
 
-static inline QEMU_ALWAYS_INLINE
-const void *lookup_tb_ptr_state(CPUState *cpu, vaddr pc, uint64_t cs_base,
-                                uint32_t flags)
-{
-    CPUJumpCache *jc;
-    TranslationBlock *tb;
-    uint32_t hash;
-
-    /*
-     * By definition we've just finished a TB, so I/O is OK.
-     * Avoid the possibility of calling cpu_io_recompile() if
-     * a page table walk triggered by tb_lookup() calling
-     * probe_access_internal() happens to touch an MMIO device.
-     * The next TB, if we chain to it, will clear the flag again.
-     */
-    cpu->neg.can_do_io = true;
-
-    /*
-     * Fast path, without a stack frame or calls: a jump cache hit when
-     * curr_cflags() would return tcg_cflags unchanged (no single-step,
-     * one-insn-per-TB, nochain logging, breakpoints or exec logging),
-     * which tb_lookup_cflags records.  Everything else takes the original
-     * path.
-     */
-    hash = tb_jmp_cache_hash_func(pc, cs_base, flags);
-    jc = cpu->tb_jmp_cache;
-    tb = qatomic_read(&jc->array[hash].tb);
-    if (likely(tb &&
-               tb_jmp_cache_pc_matches(jc, hash, tb, pc) &&
-               tb->cs_base == cs_base &&
-               tb->flags == flags &&
-               tb_cflags(tb) == qatomic_read(&cpu->tb_lookup_cflags))) {
-        return tb->tc.ptr;
-    }
-    return lookup_tb_ptr_slow(cpu, pc, cs_base, flags);
-}
-
 const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
 {
     vaddr pc;
@@ -483,7 +448,7 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
     uint32_t flags;
 
     cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
-    return lookup_tb_ptr_state(env_cpu(env), pc, cs_base, flags);
+    return tcg_lookup_tb_ptr_inline(env_cpu(env), pc, cs_base, flags);
 }
 
 /*
@@ -493,7 +458,7 @@ const void *HELPER(lookup_tb_ptr)(CPUArchState *env)
 const void *tcg_lookup_tb_ptr(CPUState *cpu, vaddr pc, uint64_t cs_base,
                               uint32_t flags)
 {
-    return lookup_tb_ptr_state(cpu, pc, cs_base, flags);
+    return tcg_lookup_tb_ptr_inline(cpu, pc, cs_base, flags);
 }
 
 /* Execute a TB, and fix up the CPU state afterwards if necessary */

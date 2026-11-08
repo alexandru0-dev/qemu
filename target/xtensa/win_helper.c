@@ -32,6 +32,7 @@
 #include "exec/helper-proto.h"
 #include "qemu/host-utils.h"
 #include "exec/exec-all.h"
+#include "accel/tcg/tb-lookup.h"
 
 static void copy_window_from_phys(CPUXtensaState *env,
                                   uint32_t window, uint32_t phys, uint32_t n)
@@ -334,7 +335,7 @@ const void *lookup_next_tb(CPUXtensaState *env, uint32_t pc, uint32_t flags)
         }
     }
 #endif
-    return tcg_lookup_tb_ptr(env_cpu(env), pc, cs_base, flags);
+    return tcg_lookup_tb_ptr_inline(env_cpu(env), pc, cs_base, flags);
 }
 
 #ifdef CONFIG_DEBUG_TCG
