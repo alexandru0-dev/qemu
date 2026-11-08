@@ -50,6 +50,7 @@
 #include "translate.h"
 
 static TCGv_i32 cpu_pc;
+static TCGv_ptr cpu_regs_ptr;
 static TCGv_i32 cpu_R[16];
 static TCGv_i32 cpu_FR[16];
 static TCGv_i64 cpu_FRD[16];
@@ -128,9 +129,15 @@ void xtensa_translate_init(void)
     cpu_pc = tcg_global_mem_new_i32(tcg_env,
             offsetof(CPUXtensaState, pc), "pc");
 
+    /*
+     * The window registers live at env->regs, which a window rotation moves
+     * within phys_regs: helpers that rotate the window write TCG globals.
+     */
+    cpu_regs_ptr = tcg_global_mem_new_ptr(tcg_env,
+                                          offsetof(CPUXtensaState, regs),
+                                          "regs_ptr");
     for (i = 0; i < 16; i++) {
-        cpu_R[i] = tcg_global_mem_new_i32(tcg_env,
-                                          offsetof(CPUXtensaState, regs[i]),
+        cpu_R[i] = tcg_global_mem_new_i32(cpu_regs_ptr, i * sizeof(uint32_t),
                                           regnames[i]);
     }
 

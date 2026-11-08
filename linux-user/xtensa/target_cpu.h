@@ -8,9 +8,13 @@ static inline void cpu_clone_regs_child(CPUXtensaState *env,
                                         target_ulong newsp,
                                         unsigned flags)
 {
+    /* After cpu_copy, env->regs points into the parent's phys_regs. */
+    env->regs = env->phys_regs + env->sregs[WINDOW_BASE] * 4;
     if (newsp) {
         env->regs[1] = newsp;
+        memmove(env->phys_regs, env->regs, 16 * sizeof(uint32_t));
         env->sregs[WINDOW_BASE] = 0;
+        env->regs = env->phys_regs;
         env->sregs[WINDOW_START] = 0x1;
     }
     env->regs[2] = 0;

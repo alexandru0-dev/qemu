@@ -187,6 +187,7 @@ static void xtensa_cpu_initfn(Object *obj)
     CPUXtensaState *env = &cpu->env;
 
     env->config = xcc->config;
+    env->regs = env->phys_regs;
 
 #ifndef CONFIG_USER_ONLY
     env->address_space_er = g_malloc(sizeof(*env->address_space_er));

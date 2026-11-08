@@ -34,38 +34,6 @@
 #include "exec/exec-all.h"
 #include "accel/tcg/tb-lookup.h"
 
-static void copy_window_from_phys(CPUXtensaState *env,
-                                  uint32_t window, uint32_t phys, uint32_t n)
-{
-    assert(phys < env->config->nareg);
-    if (phys + n <= env->config->nareg) {
-        memcpy(env->regs + window, env->phys_regs + phys,
-               n * sizeof(uint32_t));
-    } else {
-        uint32_t n1 = env->config->nareg - phys;
-        memcpy(env->regs + window, env->phys_regs + phys,
-               n1 * sizeof(uint32_t));
-        memcpy(env->regs + window + n1, env->phys_regs,
-               (n - n1) * sizeof(uint32_t));
-    }
-}
-
-static void copy_phys_from_window(CPUXtensaState *env,
-                                  uint32_t phys, uint32_t window, uint32_t n)
-{
-    assert(phys < env->config->nareg);
-    if (phys + n <= env->config->nareg) {
-        memcpy(env->phys_regs + phys, env->regs + window,
-               n * sizeof(uint32_t));
-    } else {
-        uint32_t n1 = env->config->nareg - phys;
-        memcpy(env->phys_regs + phys, env->regs + window,
-               n1 * sizeof(uint32_t));
-        memcpy(env->phys_regs, env->regs + window + n1,
-               (n - n1) * sizeof(uint32_t));
-    }
-}
-
 static inline unsigned windowbase_bound(unsigned a, const CPUXtensaState *env)
 {
     return a & (env->config->nareg / 4 - 1);
@@ -76,72 +44,62 @@ static inline unsigned windowstart_bit(unsigned a, const CPUXtensaState *env)
     return 1 << windowbase_bound(a, env);
 }
 
+/*
+ * env->regs points at phys_regs[WINDOW_BASE * 4], so the window registers
+ * are the physical registers themselves and a rotation only moves the
+ * pointer.  A window that starts in the last three quads continues past
+ * phys_regs[nareg - 1] into the tail phys_regs[nareg...]: while it does,
+ * the first window_tail() registers of the tail hold phys_regs[0...]
+ * (which are then stale), and a rotation that changes the length of the
+ * tail copies the quads that enter or leave it.  Readers of phys_regs call
+ * xtensa_sync_phys_from_window first.
+ */
+static inline unsigned window_tail(uint32_t wb, const CPUXtensaState *env)
+{
+    int t = wb * 4 + 16 - env->config->nareg;
+
+    return t > 0 ? t : 0;
+}
+
+/* Copy registers [from, to) of @src to @dst, whole quads, no library call. */
+static inline void copy_quads(uint32_t *dst, const uint32_t *src,
+                              unsigned from, unsigned to)
+{
+    for (unsigned i = from; i < to; i += 4) {
+        memcpy(dst + i, src + i, 4 * sizeof(uint32_t));
+    }
+}
+
 void xtensa_sync_window_from_phys(CPUXtensaState *env)
 {
-    copy_window_from_phys(env, 0, env->sregs[WINDOW_BASE] * 4, 16);
+    copy_quads(env->phys_regs + env->config->nareg, env->phys_regs, 0,
+               window_tail(env->sregs[WINDOW_BASE], env));
 }
 
 void xtensa_sync_phys_from_window(CPUXtensaState *env)
 {
-    copy_phys_from_window(env, env->sregs[WINDOW_BASE] * 4, 0, 16);
+    copy_quads(env->phys_regs, env->phys_regs + env->config->nareg, 0,
+               window_tail(env->sregs[WINDOW_BASE], env));
 }
 
-/*
- * env->regs holds the current window and is authoritative for it; phys_regs is
- * authoritative for every other physical register (readers of phys_regs call
- * xtensa_sync_phys_from_window first). A rotation by up to three quads keeps
- * the overlapping registers in env->regs, so only the quads leaving the window
- * are written back and only the quads entering it are loaded.
- */
 static inline QEMU_ALWAYS_INLINE
 void rotate_window_abs_inline(CPUXtensaState *env, uint32_t position)
 {
-    uint32_t nquad = env->config->nareg / 4;
-    uint32_t old = env->sregs[WINDOW_BASE];
+    uint32_t nareg = env->config->nareg;
+    unsigned old_tail = window_tail(env->sregs[WINDOW_BASE], env);
     uint32_t new = windowbase_bound(position, env);
-    uint32_t d = (new - old) & (nquad - 1);
+    unsigned new_tail = window_tail(new, env);
 
     env->sregs[WINDOW_BASE] = new;
-    if (d == 0) {
-        return;
-    }
-    /* Copy whole quads with constant sizes so that no library call is made. */
-    if (nquad >= 8 && d <= 3) {
-        int q;
-
-        for (q = 0; q < d; q++) {
-            memcpy(env->phys_regs + (((old + q) & (nquad - 1)) * 4),
-                   env->regs + q * 4, 4 * sizeof(uint32_t));
+    env->regs = env->phys_regs + new * 4;
+    if (unlikely(new_tail != old_tail)) {
+        if (new_tail > old_tail) {
+            copy_quads(env->phys_regs + nareg, env->phys_regs,
+                       old_tail, new_tail);
+        } else {
+            copy_quads(env->phys_regs, env->phys_regs + nareg,
+                       new_tail, old_tail);
         }
-        for (q = 0; q < 4 - d; q++) {
-            memcpy(env->regs + q * 4, env->regs + (q + d) * 4,
-                   4 * sizeof(uint32_t));
-        }
-        for (q = 4 - d; q < 4; q++) {
-            memcpy(env->regs + q * 4,
-                   env->phys_regs + (((new + q) & (nquad - 1)) * 4),
-                   4 * sizeof(uint32_t));
-        }
-    } else if (nquad >= 8 && d >= nquad - 3) {
-        uint32_t e = nquad - d;
-        int q;
-
-        for (q = 4 - e; q < 4; q++) {
-            memcpy(env->phys_regs + (((old + q) & (nquad - 1)) * 4),
-                   env->regs + q * 4, 4 * sizeof(uint32_t));
-        }
-        for (q = 3; q >= (int)e; q--) {
-            memcpy(env->regs + q * 4, env->regs + (q - e) * 4,
-                   4 * sizeof(uint32_t));
-        }
-        for (q = 0; q < e; q++) {
-            memcpy(env->regs + q * 4,
-                   env->phys_regs + (((new + q) & (nquad - 1)) * 4),
-                   4 * sizeof(uint32_t));
-        }
-    } else {
-        copy_phys_from_window(env, old * 4, 0, 16);
-        copy_window_from_phys(env, 0, new * 4, 16);
     }
 }
 

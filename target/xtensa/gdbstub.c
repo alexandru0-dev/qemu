@@ -147,12 +147,17 @@ int xtensa_cpu_gdb_write_register(CPUState *cs, uint8_t *mem_buf, int n)
         break;
 
     case xtRegisterTypeArRegfile: /*ar*/
+        xtensa_sync_phys_from_window(env);
         env->phys_regs[(reg->targno & 0xff) % env->config->nareg] = tmp;
         xtensa_sync_window_from_phys(env);
         break;
 
     case xtRegisterTypeSpecialReg: /*SR*/
-        env->sregs[reg->targno & 0xff] = tmp;
+        if ((reg->targno & 0xff) == WINDOW_BASE) {
+            xtensa_rotate_window(env, tmp - env->sregs[WINDOW_BASE]);
+        } else {
+            env->sregs[reg->targno & 0xff] = tmp;
+        }
         break;
 
     case xtRegisterTypeUserReg: /*UR*/

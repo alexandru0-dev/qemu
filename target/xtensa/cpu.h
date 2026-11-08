@@ -521,11 +521,17 @@ enum {
 
 struct CPUArchState {
     const XtensaConfig *config;
-    uint32_t regs[16];
+    /*
+     * The current window AR0..AR15: phys_regs + WINDOW_BASE * 4.  Where the
+     * window wraps past phys_regs[nareg - 1], it continues into the tail
+     * phys_regs[nareg...], which then stands for phys_regs[0...]; see
+     * win_helper.c.  TCG addresses the window registers through it.
+     */
+    uint32_t *regs;
     uint32_t pc;
     uint32_t sregs[256];
     uint32_t uregs[256];
-    uint32_t phys_regs[MAX_NAREG];
+    uint32_t phys_regs[MAX_NAREG + 12];
     union {
         float32 f32[2];
         float64 f64;

@@ -212,11 +212,12 @@ void setup_rt_frame(int sig, struct target_sigaction *ka,
         install_sigtramp(frame->retcode);
         ra = default_rt_sigreturn;
     }
-    memset(env->regs, 0, sizeof(env->regs));
+    env->sregs[WINDOW_BASE] = 0;
+    env->regs = env->phys_regs;
+    env->sregs[WINDOW_START] = 1;
+    memset(env->regs, 0, 16 * sizeof(uint32_t));
     env->pc = handler;
     env->regs[1] = frame_addr;
-    env->sregs[WINDOW_BASE] = 0;
-    env->sregs[WINDOW_START] = 1;
 
     abi_call0 = (env->sregs[PS] & PS_WOE) == 0;
     env->sregs[PS] = PS_UM | (3 << PS_RING_SHIFT);
@@ -258,6 +259,7 @@ static void restore_sigcontext(CPUXtensaState *env,
     __get_user(env->sregs[LCOUNT], &sc->sc_lcount);
 
     env->sregs[WINDOW_BASE] = 0;
+    env->regs = env->phys_regs;
     env->sregs[WINDOW_START] = 1;
     env->sregs[PS] = deposit32(env->sregs[PS],
                                PS_CALLINC_SHIFT,
