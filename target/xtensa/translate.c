@@ -547,7 +547,46 @@ static int gen_postprocess(DisasContext *dc, int slot)
 #ifndef CONFIG_USER_ONLY
     if (op_flags & XTENSA_OP_CHECK_INTERRUPTS) {
         translator_io_start(&dc->base);
-        gen_helper_check_interrupts(tcg_env);
+        if (cpu_SR[INTSET] && cpu_SR[INTENABLE]) {
+            /*
+             * RSIL and WSR.PS in the guest's critical sections get here
+             * constantly, almost always with nothing set and enabled and no
+             * interrupt pending. Then the helper could at most clear a stale
+             * CPU_INTERRUPT_HARD, which only costs one exit that runs
+             * check_interrupts anyway; an interrupt that a device raises
+             * meanwhile is checked by xtensa_set_irq itself.
+             */
+            TCGLabel *skip = gen_new_label();
+            TCGv_i32 pending = tcg_temp_new_i32();
+            TCGv_i32 intset = tcg_temp_new_i32();
+            TCGv_i32 level = tcg_temp_new_i32();
+
+            /*
+             * Flush PS/INTENABLE to env and order them before reading INTSET
+             * so a concurrent xtensa_set_irq() on another core cannot observe
+             * stale masked state while we observe INTSET == 0.
+             */
+            if (cpu_SR[PS]) {
+                tcg_gen_st_i32(cpu_SR[PS], tcg_env,
+                               offsetof(CPUXtensaState, sregs[PS]));
+            }
+            tcg_gen_st_i32(cpu_SR[INTENABLE], tcg_env,
+                           offsetof(CPUXtensaState, sregs[INTENABLE]));
+            tcg_gen_mb(TCG_MO_ST_LD | TCG_BAR_SC);
+            tcg_gen_ld_i32(intset, tcg_env,
+                           offsetof(CPUXtensaState, sregs[INTSET]));
+            tcg_gen_ori_i32(pending, cpu_SR[INTENABLE],
+                            dc->config->inttype_mask[INTTYPE_NMI]);
+            tcg_gen_and_i32(pending, pending, intset);
+            tcg_gen_ld_i32(level, tcg_env,
+                           offsetof(CPUXtensaState, pending_irq_level));
+            tcg_gen_or_i32(pending, pending, level);
+            tcg_gen_brcondi_i32(TCG_COND_EQ, pending, 0, skip);
+            gen_helper_check_interrupts(tcg_env);
+            gen_set_label(skip);
+        } else {
+            gen_helper_check_interrupts(tcg_env);
+        }
     }
 #endif
     if (op_flags & XTENSA_OP_SYNC_REGISTER_WINDOW) {
