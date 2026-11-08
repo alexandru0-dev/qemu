@@ -39,6 +39,9 @@ static inline bool tb_lookup_matches(CPUJumpCache *jc, uint32_t hash,
 #endif
 }
 
+const void *tcg_lookup_and_chain(CPUState *cpu, TranslationBlock *tb, int n,
+                                 vaddr pc, uint64_t cs_base, uint32_t flags);
+
 /* tcg_lookup_tb_ptr() without its jump-cache fast path. */
 const void *tcg_lookup_tb_ptr_slow(CPUState *cpu, vaddr pc, uint64_t cs_base,
                                    uint32_t flags);

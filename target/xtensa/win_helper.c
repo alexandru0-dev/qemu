@@ -365,6 +365,36 @@ const void *HELPER(lookup_next_tb)(CPUXtensaState *env, uint32_t pc,
 }
 
 /*
+ * The jump of @tb's exit @n to @pc on another page, with cs_base 0 and TB
+ * flags @flags, was not chained in this generation: chain it (unless YIELD
+ * is pending) and return the next TB, as helper_lookup_next_tb.
+ */
+const void *HELPER(chain_next_tb)(CPUXtensaState *env, void *tb, uint32_t n,
+                                  uint32_t pc, uint32_t flags)
+{
+    if (unlikely(env->yield_needed)) {
+        return lookup_next_tb(env, pc, flags);
+    }
+#ifdef CONFIG_DEBUG_TCG
+    {
+        vaddr full_pc;
+        uint64_t full_cs_base;
+        uint32_t full_flags;
+
+        cpu_get_tb_cpu_state(env, &full_pc, &full_cs_base, &full_flags);
+        if (full_pc != pc || full_cs_base != 0 || full_flags != flags) {
+            error_report("xtensa: chained TB state mismatch: pc %08x/%08x "
+                         "cs_base 0/%"PRIx64" flags %08x/%08x",
+                         pc, (uint32_t)full_pc, full_cs_base,
+                         flags, full_flags);
+            abort();
+        }
+    }
+#endif
+    return tcg_lookup_and_chain(env_cpu(env), tb, n, pc, 0, flags);
+}
+
+/*
  * retw_checked followed by the jump to the return address and the lookup of
  * the TB there, in one call.  @flags carries XTENSA_LOOKUP_WINDOW.
  */

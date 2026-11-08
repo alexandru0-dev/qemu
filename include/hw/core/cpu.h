@@ -366,6 +366,12 @@ typedef struct CPUNegativeOffsetState {
 #endif
     IcountDecr icount_decr;
     bool can_do_io;
+    /*
+     * Incremented whenever the jump cache is cleared, that is whenever the
+     * mapping of guest virtual code addresses may have changed: jumps
+     * chained across guest pages are only valid within one generation.
+     */
+    uint32_t tb_xpage_gen;
 } CPUNegativeOffsetState;
 
 struct KVMState;

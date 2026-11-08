@@ -857,6 +857,58 @@ void tb_reset_jump(TranslationBlock *tb, int n)
     tb_set_jmp_target(tb, n, addr);
 }
 
+/*
+ * Global counter so each vCPU and each TLB flush gets a distinct cross-page
+ * chaining generation; shared TBs can therefore never match a link chained
+ * under another vCPU's address space.
+ */
+static uint32_t tb_xpage_gen_next;
+
+void tcg_bump_xpage_gen(CPUState *cpu)
+{
+    uint32_t gen;
+
+    do {
+        gen = qatomic_add_fetch(&tb_xpage_gen_next, 1);
+    } while (gen == TB_XPAGE_GEN_NONE);
+    qatomic_set(&cpu->neg.tb_xpage_gen, gen);
+}
+
+/*
+ * Unchain jump @n of @tb, which stays valid, so that tb_add_jump() can chain
+ * it again.
+ */
+void tb_unchain_jump(TranslationBlock *tb, int n)
+{
+    uintptr_t ptr = qatomic_read(&tb->jmp_dest[n]);
+    TranslationBlock *dest = (TranslationBlock *)ptr;
+    TranslationBlock *t;
+    uintptr_t *pprev;
+    int m;
+
+    /* Not chained, or @tb is being invalidated (LSB set). */
+    if (!ptr || (ptr & 1)) {
+        return;
+    }
+    qemu_spin_lock(&dest->jmp_lock);
+    if (qatomic_read(&tb->jmp_dest[n]) != ptr) {
+        /* tb_jmp_unlink(dest) unchained it meanwhile. */
+        qemu_spin_unlock(&dest->jmp_lock);
+        return;
+    }
+    pprev = &dest->jmp_list_head;
+    TB_FOR_EACH_JMP(dest, t, m) {
+        if (t == tb && m == n) {
+            *pprev = t->jmp_list_next[m];
+            break;
+        }
+        pprev = &t->jmp_list_next[m];
+    }
+    tb_reset_jump(tb, n);
+    qatomic_set(&tb->jmp_dest[n], (uintptr_t)NULL);
+    qemu_spin_unlock(&dest->jmp_lock);
+}
+
 /* remove any jumps to the TB */
 static inline void tb_jmp_unlink(TranslationBlock *dest)
 {

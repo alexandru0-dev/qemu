@@ -356,8 +356,59 @@ static void gen_next_flags_window(DisasContext *dc)
         XTENSA_LOOKUP_WINDOW;
 }
 
+/*
+ * A jump to @dest on another guest page, with the next TB's flags known:
+ * goto_tb @slot while the jump chained by helper_chain_next_tb belongs to
+ * the CPU's current tb_xpage_gen (the guest code mapping has not changed
+ * since), otherwise helper_chain_next_tb looks the TB up and chains the jump.
+ * With the loop option, cs_base must be 0, that is LEND must not be in the
+ * target page; otherwise use helper_lookup_next_tb.
+ */
+static void gen_jump_xpage(DisasContext *dc, uint32_t dest, int slot)
+{
+    TranslationBlock *tb = dc->base.tb;
+    uint32_t flags = dc->next_flags;
+    TCGv_i32 gen = tcg_temp_new_i32();
+    TCGv_i32 tb_gen = tcg_temp_new_i32();
+    TCGv_ptr ptr = tcg_temp_new_ptr();
+    TCGLabel *chain = gen_new_label();
+    TCGLabel *slow = NULL;
+
+    if (flags & XTENSA_LOOKUP_LOOP) {
+        TCGv_i32 dist = tcg_temp_new_i32();
+
+        slow = gen_new_label();
+        tcg_gen_subi_i32(dist, cpu_SR[LEND], dest & TARGET_PAGE_MASK);
+        tcg_gen_brcondi_i32(TCG_COND_LTU, dist,
+                            TARGET_PAGE_SIZE + dc->config->max_insn_size,
+                            slow);
+        flags &= ~XTENSA_LOOKUP_LOOP;
+    }
+    tcg_gen_ld_i32(gen, tcg_env,
+                   offsetof(ArchCPU, parent_obj.neg.tb_xpage_gen) -
+                   offsetof(ArchCPU, env));
+    tcg_gen_ld_i32(tb_gen, tcg_constant_ptr(&tb->xpage_gen[slot]), 0);
+    tcg_gen_brcond_i32(TCG_COND_NE, gen, tb_gen, chain);
+    tcg_gen_goto_tb(slot);
+    /* Also where the goto_tb lands while it is not chained. */
+    gen_set_label(chain);
+    gen_helper_chain_next_tb(ptr, tcg_env, tcg_constant_ptr(tb),
+                             tcg_constant_i32(slot), tcg_constant_i32(dest),
+                             tcg_constant_i32(flags));
+    tcg_gen_goto_ptr(ptr);
+    if (slow) {
+        gen_set_label(slow);
+        gen_helper_lookup_next_tb(ptr, tcg_env, cpu_pc,
+                                  tcg_constant_i32(dc->next_flags));
+        tcg_gen_goto_ptr(ptr);
+    }
+}
+
 static void gen_jump_slot(DisasContext *dc, TCGv dest, int slot)
 {
+    int xpage_slot = dc->xpage_slot;
+
+    dc->xpage_slot = -1;
     tcg_gen_mov_i32(cpu_pc, dest);
     if (dc->icount) {
         tcg_gen_mov_i32(cpu_SR[ICOUNT], dc->next_icount);
@@ -368,6 +419,9 @@ static void gen_jump_slot(DisasContext *dc, TCGv dest, int slot)
     if (slot >= 0) {
         tcg_gen_goto_tb(slot);
         tcg_gen_exit_tb(dc->base.tb, slot);
+    } else if (xpage_slot >= 0 && gen_lookup_next_tb_ok(dc) &&
+               !(dc->next_flags & XTENSA_LOOKUP_WINDOW)) {
+        gen_jump_xpage(dc, dc->xpage_dest, xpage_slot);
     } else if (gen_lookup_next_tb_ok(dc)) {
         /*
          * The translator knows the next TB's flags: look it up without
@@ -397,7 +451,15 @@ static void gen_jump(DisasContext *dc, TCGv dest)
 
 static int adjust_jump_slot(DisasContext *dc, uint32_t dest, int slot)
 {
-    return translator_use_goto_tb(&dc->base, dest) ? slot : -1;
+    if (translator_use_goto_tb(&dc->base, dest)) {
+        return slot;
+    }
+    /* Another page: gen_jump_slot may chain it with a generation check. */
+    if (slot >= 0 && !(tb_cflags(dc->base.tb) & CF_NO_GOTO_TB)) {
+        dc->xpage_slot = slot;
+        dc->xpage_dest = dest;
+    }
+    return -1;
 }
 
 static void gen_jumpi(DisasContext *dc, uint32_t dest, int slot)
@@ -1272,6 +1334,7 @@ static void disas_xtensa_insn(CPUXtensaState *env, DisasContext *dc)
                                          XTENSA_OP_CHECK_INTERRUPTS |
                                          XTENSA_OP_SYNC_REGISTER_WINDOW));
     dc->next_flags = dc->tb_next_flags;
+    dc->xpage_slot = -1;
 
     for (slot = 0; slot < slots; ++slot) {
         struct slot_prop *pslot = ordered[slot];

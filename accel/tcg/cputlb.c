@@ -159,6 +159,8 @@ static void tb_jmp_cache_clear_page(CPUState *cpu, vaddr page_addr)
     CPUJumpCache *jc = cpu->tb_jmp_cache;
     int i, i0;
 
+    tcg_bump_xpage_gen(cpu);
+
     if (!TB_JMP_CACHE_PAGE_HASH) {
         /* Entries are not grouped by page: clear them all. */
         tcg_flush_jmp_cache(cpu);

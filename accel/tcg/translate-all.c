@@ -519,6 +519,8 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     tb->jmp_list_next[1] = (uintptr_t)NULL;
     tb->jmp_dest[0] = (uintptr_t)NULL;
     tb->jmp_dest[1] = (uintptr_t)NULL;
+    tb->xpage_gen[0] = TB_XPAGE_GEN_NONE;
+    tb->xpage_gen[1] = TB_XPAGE_GEN_NONE;
 
     /* init original jump addresses which have been set during tcg_gen_code() */
     if (tb->jmp_reset_offset[0] != TB_JMP_OFFSET_INVALID) {
@@ -736,6 +738,8 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
 void tcg_flush_jmp_cache(CPUState *cpu)
 {
     CPUJumpCache *jc = cpu->tb_jmp_cache;
+
+    tcg_bump_xpage_gen(cpu);
 
     /* During early initialization, the cache may not yet be allocated. */
     if (unlikely(jc == NULL)) {

@@ -58,6 +58,9 @@ struct DisasContext {
      */
     bool next_flags_known;
     uint32_t next_flags;
+    /* Slot and target of a constant jump to another page, or -1. */
+    int xpage_slot;
+    uint32_t xpage_dest;
     uint32_t tb_next_flags;
     xtensa_insnbuf_word insnbuf[MAX_INSNBUF_LENGTH];
     xtensa_insnbuf_word slotbuf[MAX_INSNBUF_LENGTH];

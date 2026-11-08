@@ -49,6 +49,9 @@ TranslationBlock *tb_gen_code(CPUState *cpu, vaddr pc,
 void page_init(void);
 void tb_htable_init(void);
 void tb_reset_jump(TranslationBlock *tb, int n);
+void tb_unchain_jump(TranslationBlock *tb, int n);
+/* Assign a fresh global generation to invalidate cross-page jumps on @cpu. */
+void tcg_bump_xpage_gen(CPUState *cpu);
 TranslationBlock *tb_link_page(TranslationBlock *tb);
 void cpu_restore_state_from_tb(CPUState *cpu, TranslationBlock *tb,
                                uintptr_t host_pc);

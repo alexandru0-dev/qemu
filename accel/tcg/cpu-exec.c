@@ -461,6 +461,41 @@ const void *tcg_lookup_tb_ptr(CPUState *cpu, vaddr pc, uint64_t cs_base,
     return tcg_lookup_tb_ptr_inline(cpu, pc, cs_base, flags);
 }
 
+static void tb_add_jump(TranslationBlock *tb, int n,
+                               TranslationBlock *tb_next);
+
+/*
+ * tcg_lookup_tb_ptr() that also chains jump @n of @tb, whose target is on
+ * another guest page, to the TB found, for the current tb_xpage_gen.  The
+ * translated code checks the generation before it takes the chained jump.
+ */
+const void *tcg_lookup_and_chain(CPUState *cpu, TranslationBlock *tb, int n,
+                                 vaddr pc, uint64_t cs_base, uint32_t flags)
+{
+    uint32_t cflags = qatomic_read(&cpu->tb_lookup_cflags);
+    TranslationBlock *dest;
+
+    if (cflags == -1) {
+        /* Breakpoints, single-step or exec logging: no chaining. */
+        return tcg_lookup_tb_ptr_slow(cpu, pc, cs_base, flags);
+    }
+    cpu->neg.can_do_io = true;
+    dest = tb_lookup(cpu, pc, cs_base, flags, cflags);
+    if (dest == NULL) {
+        return tcg_code_gen_epilogue;
+    }
+    /* As in cpu_exec_loop: no direct jumps to a TB spanning two pages. */
+    if (tb_page_addr1(dest) == -1) {
+        tb_unchain_jump(tb, n);
+        tb_add_jump(tb, n, dest);
+        if (qatomic_read(&tb->jmp_dest[n]) == (uintptr_t)dest) {
+            tb->xpage_gen[n] = qatomic_read(&cpu->neg.tb_xpage_gen);
+        }
+        qemu_thread_jit_execute();
+    }
+    return dest->tc.ptr;
+}
+
 /* Execute a TB, and fix up the CPU state afterwards if necessary */
 /*
  * Disable CFI checks.
@@ -1116,6 +1151,7 @@ bool tcg_exec_realizefn(CPUState *cpu, Error **errp)
     /* The jump cache of these targets has no room for CF_PCREL. */
     assert(TB_JMP_CACHE_PCREL || !(cpu->tcg_cflags & CF_PCREL));
     cpu->tb_jmp_cache = g_new0(CPUJumpCache, 1);
+    tcg_bump_xpage_gen(cpu);
     tlb_init(cpu);
 #ifndef CONFIG_USER_ONLY
     tcg_iommu_init_notifier_list(cpu);

@@ -117,9 +117,16 @@ struct TranslationBlock {
      * two of such jumps are supported.
      */
 #define TB_JMP_OFFSET_INVALID 0xffff /* indicates no jump generated */
+#define TB_XPAGE_GEN_NONE UINT32_MAX  /* never a CPU's tb_xpage_gen */
     uint16_t jmp_reset_offset[2]; /* offset of original jump target */
     uint16_t jmp_insn_offset[2];  /* offset of direct jump insn */
     uintptr_t jmp_target_addr[2]; /* target address */
+    /*
+     * For a jump chained to a TB on another guest page (see
+     * tcg_lookup_and_chain()): the CPU's tb_xpage_gen when it was chained.
+     * The translated code takes the chained jump only while they match.
+     */
+    uint32_t xpage_gen[2];
 
     /*
      * Each TB has a NULL-terminated list (jmp_list_head) of incoming jumps.
