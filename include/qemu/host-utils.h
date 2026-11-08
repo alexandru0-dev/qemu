@@ -110,6 +110,30 @@ static inline uint64_t muldiv64_rounding(uint64_t a, uint32_t b, uint32_t c,
     }
     rh = (uint64_t)u.l.high * (uint64_t)b;
     rh += (rl >> 32);
+    if (c <= 0xffff) {
+        /*
+         * Divide the 96-bit product 16 bits at a time: the remainder stays
+         * below c, so each step is a 32-bit division, which 32-bit hosts do in
+         * hardware or cheaply, instead of two library 64-bit divisions. Device
+         * timers convert between nanoseconds and ticks with such divisors on
+         * every counter access. The quotient is truncated to 64 bits as below.
+         */
+        uint32_t digits[6] = {
+            rh >> 48, (rh >> 32) & 0xffff, (rh >> 16) & 0xffff, rh & 0xffff,
+            (rl >> 16) & 0xffff, rl & 0xffff,
+        };
+        uint64_t q = 0;
+        uint32_t r = 0;
+        int i;
+
+        for (i = 0; i < 6; i++) {
+            uint32_t v = (r << 16) | digits[i];
+
+            q = (q << 16) | (v / c);
+            r = v % c;
+        }
+        return q;
+    }
     res.l.high = rh / c;
     res.l.low = (((rh % c) << 32) + (rl & 0xffffffff)) / c;
     return res.ll;
