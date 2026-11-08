@@ -202,9 +202,14 @@ static bool tcg_get_one_insn_per_tb(Object *obj, Error **errp)
 static void tcg_set_one_insn_per_tb(Object *obj, bool value, Error **errp)
 {
     TCGState *s = TCG_STATE(obj);
+    CPUState *cpu;
+
     s->one_insn_per_tb = value;
     /* Set the global also: this changes the behaviour */
     qatomic_set(&one_insn_per_tb, value);
+    CPU_FOREACH(cpu) {
+        qatomic_set(&cpu->tb_lookup_cflags, -1);
+    }
 }
 
 static int tcg_gdbstub_supported_sstep_flags(void)

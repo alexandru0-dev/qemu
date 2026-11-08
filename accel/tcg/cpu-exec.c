@@ -152,6 +152,7 @@ bool tcg_cflags_has(CPUState *cpu, uint32_t flags)
 void tcg_cflags_set(CPUState *cpu, uint32_t flags)
 {
     cpu->tcg_cflags |= flags;
+    qatomic_set(&cpu->tb_lookup_cflags, -1);
 }
 
 uint32_t curr_cflags(CPUState *cpu)
@@ -389,6 +390,24 @@ static inline bool check_for_breakpoints(CPUState *cpu, vaddr pc,
         check_for_breakpoints_slow(cpu, pc, cflags);
 }
 
+/*
+ * Recompute cpu->tb_lookup_cflags: curr_cflags() unchanged and no
+ * breakpoints or exec logging, which lookup_tb_ptr_slow() handles.
+ */
+static void update_tb_lookup_cflags(CPUState *cpu)
+{
+    uint32_t cflags = cpu->tcg_cflags;
+
+    if (cpu->singlestep_enabled ||
+        !QTAILQ_EMPTY(&cpu->breakpoints) ||
+        qatomic_read(&one_insn_per_tb) ||
+        qemu_loglevel_mask(CPU_LOG_TB_NOCHAIN | CPU_LOG_TB_CPU |
+                           CPU_LOG_EXEC)) {
+        cflags = -1;
+    }
+    qatomic_set(&cpu->tb_lookup_cflags, cflags);
+}
+
 /**
  * helper_lookup_tb_ptr: quick check for next tb
  * @env: current cpu state
@@ -407,6 +426,7 @@ lookup_tb_ptr_slow(CPUState *cpu, vaddr pc, uint64_t cs_base, uint32_t flags)
         cpu_loop_exit(cpu);
     }
 
+    update_tb_lookup_cflags(cpu);
     tb = tb_lookup(cpu, pc, cs_base, flags, cflags);
     if (tb == NULL) {
         return tcg_code_gen_epilogue;
@@ -439,8 +459,9 @@ const void *lookup_tb_ptr_state(CPUState *cpu, vaddr pc, uint64_t cs_base,
     /*
      * Fast path, without a stack frame or calls: a jump cache hit when
      * curr_cflags() would return tcg_cflags unchanged (no single-step,
-     * one-insn-per-TB, nochain logging, breakpoints or exec logging).
-     * Everything else takes the original path.
+     * one-insn-per-TB, nochain logging, breakpoints or exec logging),
+     * which tb_lookup_cflags records.  Everything else takes the original
+     * path.
      */
     hash = tb_jmp_cache_hash_func(pc, cs_base, flags);
     jc = cpu->tb_jmp_cache;
@@ -449,12 +470,7 @@ const void *lookup_tb_ptr_state(CPUState *cpu, vaddr pc, uint64_t cs_base,
                tb_jmp_cache_pc_matches(jc, hash, tb, pc) &&
                tb->cs_base == cs_base &&
                tb->flags == flags &&
-               tb_cflags(tb) == cpu->tcg_cflags &&
-               !cpu->singlestep_enabled &&
-               QTAILQ_EMPTY(&cpu->breakpoints) &&
-               !qatomic_read(&one_insn_per_tb) &&
-               !qemu_loglevel_mask(CPU_LOG_TB_NOCHAIN | CPU_LOG_TB_CPU |
-                                   CPU_LOG_EXEC))) {
+               tb_cflags(tb) == qatomic_read(&cpu->tb_lookup_cflags))) {
         return tb->tc.ptr;
     }
     return lookup_tb_ptr_slow(cpu, pc, cs_base, flags);
@@ -1034,6 +1050,7 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                 break;
             }
 
+            update_tb_lookup_cflags(cpu);
             tb = tb_lookup(cpu, pc, cs_base, flags, cflags);
             if (tb == NULL) {
                 CPUJumpCache *jc;

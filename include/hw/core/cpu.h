@@ -507,6 +507,15 @@ struct CPUState {
     MemoryRegion *memory;
 
     struct CPUJumpCache *tb_jmp_cache;
+    /*
+     * The cflags a TB found in tb_jmp_cache must have for the goto_ptr
+     * lookup to use it without the checks of its slow path: tcg_cflags
+     * while no single-step, breakpoint, one-insn-per-TB or nochain/exec
+     * logging is in effect, otherwise -1, which no TB has.  Recomputed by
+     * the execution loop and the slow path; set to -1 where these settings
+     * change for this CPU.
+     */
+    uint32_t tb_lookup_cflags;
 
     GArray *gdb_regs;
     int gdb_num_regs;

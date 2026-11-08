@@ -135,6 +135,7 @@ static void cpu_common_reset_hold(Object *obj, ResetType type)
     cpu->exception_index = -1;
     cpu->crash_occurred = false;
     cpu->cflags_next_tb = -1;
+    cpu->tb_lookup_cflags = -1;
 
     cpu_exec_reset_hold(cpu);
 }
@@ -246,6 +247,7 @@ static void cpu_common_initfn(Object *obj)
     cpu->nr_cores = 1;
     cpu->nr_threads = 1;
     cpu->cflags_next_tb = -1;
+    cpu->tb_lookup_cflags = -1;
 
     /* allocate storage for thread info, initialise condition variables */
     cpu->thread = g_new0(QemuThread, 1);

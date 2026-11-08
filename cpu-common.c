@@ -400,6 +400,8 @@ int cpu_breakpoint_insert(CPUState *cpu, vaddr pc, int flags,
 
     bp->pc = pc;
     bp->flags = flags;
+    /* Lookups of the next TB must check the new breakpoint. */
+    qatomic_set(&cpu->tb_lookup_cflags, -1);
 
     /* keep all GDB-injected breakpoints in front */
     if (flags & BP_GDB) {
