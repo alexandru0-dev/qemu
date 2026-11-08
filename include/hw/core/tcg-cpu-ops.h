@@ -114,6 +114,12 @@ struct TCGCPUOps {
 #else
     /** @do_interrupt: Callback for interrupt handling.  */
     void (*do_interrupt)(CPUState *cpu);
+    /**
+     * @do_exception_lockless: Optionally handle the pending exception like
+     * @do_interrupt but without the BQL, taking it only for the parts that
+     * need it. Return false to leave the exception to @do_interrupt.
+     */
+    bool (*do_exception_lockless)(CPUState *cpu);
     /** @cpu_exec_interrupt: Callback for processing interrupts in cpu_exec */
     bool (*cpu_exec_interrupt)(CPUState *cpu, int interrupt_request);
     /**

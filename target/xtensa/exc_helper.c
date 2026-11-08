@@ -263,6 +263,51 @@ void xtensa_cpu_do_interrupt(CPUState *cs)
     check_interrupts(env);
 }
 
+/*
+ * Window, kernel, user, double and debug exceptions only move the PC to their
+ * vector; the translated code already set EXCCAUSE, EPC and PS. The BQL that
+ * cpu_handle_exception takes for do_interrupt is needed only when
+ * check_interrupts would change the interrupt request, so skip it otherwise:
+ * register-window overflows and underflows are frequent.
+ */
+bool xtensa_cpu_do_exception_lockless(CPUState *cs)
+{
+    CPUXtensaState *env = cpu_env(cs);
+    uint32_t vector;
+
+    switch (cs->exception_index) {
+    case EXC_WINDOW_OVERFLOW4:
+    case EXC_WINDOW_UNDERFLOW4:
+    case EXC_WINDOW_OVERFLOW8:
+    case EXC_WINDOW_UNDERFLOW8:
+    case EXC_WINDOW_OVERFLOW12:
+    case EXC_WINDOW_UNDERFLOW12:
+    case EXC_KERNEL:
+    case EXC_USER:
+    case EXC_DOUBLE:
+    case EXC_DEBUG:
+        break;
+    default:
+        return false;
+    }
+    vector = env->config->exception_vector[cs->exception_index];
+    if (!vector) {
+        return false;
+    }
+    qemu_log_mask(CPU_LOG_INT, "%s(%d) "
+                  "pc = %08x, a0 = %08x, ps = %08x, ccount = %08x\n",
+                  __func__, cs->exception_index,
+                  env->pc, env->regs[0], env->sregs[PS],
+                  env->sregs[CCOUNT]);
+    env->pc = relocated_vector(env, vector);
+    if (!xtensa_interrupts_unchanged(env)) {
+        bql_lock();
+        check_interrupts(env);
+        bql_unlock();
+    }
+    return true;
+}
+
 bool xtensa_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 {
     if (interrupt_request & CPU_INTERRUPT_HARD) {
