@@ -403,8 +403,39 @@ const void *HELPER(retw_lookup)(CPUXtensaState *env, uint32_t pc,
 {
     uint32_t a0 = env->regs[0];
     uint32_t next_pc = (pc & 0xc0000000) | (a0 & 0x3fffffff);
-
+    uint32_t nareg = env->config->nareg;
+    uint32_t nquad = nareg / 4;
+    uint32_t wb = env->sregs[WINDOW_BASE];
+    uint32_t ws = env->sregs[WINDOW_START] & ((1u << nquad) - 1);
+    uint32_t n = a0 >> 30;
+    /* WINDOW_START bits of windowbase - 3 (bit 0) to windowbase - 1. */
+    uint32_t prev = ((ws | (ws << nquad)) >> (wb + nquad - 3)) & 7;
     int excp;
+
+    /*
+     * The common case, decoded once from local copies: RETW is legal and
+     * does not underflow, that is, the nearest frame below this one starts
+     * at windowbase - n (test_ill_retw and test_underflow_retw below).
+     */
+    if (likely(n != 0 && (prev >> (3 - n)) == 1)) {
+        uint32_t new_wb = (wb - n) & (nquad - 1);
+        uint32_t w;
+
+        ws &= ~(1u << wb);
+        env->sregs[WINDOW_START] = ws;
+        if (unlikely(window_tail(wb, env) != window_tail(new_wb, env))) {
+            rotate_window_abs_inline(env, new_wb);
+        } else {
+            env->sregs[WINDOW_BASE] = new_wb;
+            env->regs = env->phys_regs + new_wb * 4;
+        }
+        env->pc = next_pc;
+        /* The window field, as lookup_next_tb computes it. */
+        w = (ws | (ws << nquad)) >> (new_wb + 1);
+        flags = (flags & ~XTENSA_LOOKUP_WINDOW) |
+            (ctz32(w | 0x8) << XTENSA_TBFLAG_WINDOW_SHIFT);
+        return lookup_next_tb(env, next_pc, flags);
+    }
 
     test_ill_retw_inline(env, pc);
     excp = test_underflow_retw_inline(env, pc);
