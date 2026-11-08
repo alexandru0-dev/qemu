@@ -11,6 +11,34 @@
 #include "tb-jmp-cache.h"
 #include "tb-hash.h"
 
+/*
+ * Targets whose pc and cs_base values fit in 32 bits (with TB_JMP_CACHE_PCREL
+ * disabled) can define TB_LOOKUP_LOW_WORDS to 1 in cpu-param.h to compare only
+ * the low 32-bit words, saving a load and compare for each on 32-bit hosts.
+ */
+#if !defined(TB_LOOKUP_LOW_WORDS) || TB_JMP_CACHE_PCREL
+#undef TB_LOOKUP_LOW_WORDS
+#define TB_LOOKUP_LOW_WORDS 0
+#endif
+
+static inline bool tb_lookup_matches(CPUJumpCache *jc, uint32_t hash,
+                                     TranslationBlock *tb, vaddr pc,
+                                     uint64_t cs_base)
+{
+#if TB_LOOKUP_LOW_WORDS
+    tcg_debug_assert(pc == (uint32_t)pc && cs_base == (uint32_t)cs_base);
+    if ((uint32_t)tb->pc == (uint32_t)pc &&
+        (uint32_t)tb->cs_base == (uint32_t)cs_base) {
+        tcg_debug_assert(tb->pc == pc && tb->cs_base == cs_base);
+        return true;
+    }
+    return false;
+#else
+    return tb_jmp_cache_pc_matches(jc, hash, tb, pc) &&
+        tb->cs_base == cs_base;
+#endif
+}
+
 /* tcg_lookup_tb_ptr() without its jump-cache fast path. */
 const void *tcg_lookup_tb_ptr_slow(CPUState *cpu, vaddr pc, uint64_t cs_base,
                                    uint32_t flags);
@@ -48,8 +76,7 @@ const void *tcg_lookup_tb_ptr_inline(CPUState *cpu, vaddr pc,
     jc = cpu->tb_jmp_cache;
     tb = qatomic_read(&jc->array[hash].tb);
     if (likely(tb &&
-               tb_jmp_cache_pc_matches(jc, hash, tb, pc) &&
-               tb->cs_base == cs_base &&
+               tb_lookup_matches(jc, hash, tb, pc, cs_base) &&
                tb->flags == flags &&
                tb_cflags(tb) == qatomic_read(&cpu->tb_lookup_cflags))) {
         return tb->tc.ptr;
