@@ -147,6 +147,10 @@ static int tcg_insert_breakpoint(CPUState *cs, int type, vaddr addr, vaddr len)
     case GDB_WATCHPOINT_READ:
     case GDB_WATCHPOINT_ACCESS:
         CPU_FOREACH(cpu) {
+            if (type != GDB_WATCHPOINT_WRITE) {
+                /* Translated code may load these addresses directly. */
+                tb_flush_direct_loads(cpu, addr, len);
+            }
             err = cpu_watchpoint_insert(cpu, addr, len,
                                         xlat_gdb_type(cpu, type), NULL);
             if (err) {

@@ -32,6 +32,7 @@
 #include "qemu/host-utils.h"
 #include "exec/exec-all.h"
 #include "exec/address-spaces.h"
+#include "exec/tb-flush.h"
 
 void HELPER(wsr_ibreakenable)(CPUXtensaState *env, uint32_t v)
 {
@@ -103,6 +104,10 @@ static void set_dbreak(CPUXtensaState *env, unsigned i, uint32_t dbreaka,
                       "DBREAKC mask is not contiguous: 0x%08x\n", dbreakc);
         /* cut mask after the first zero bit */
         mask = 0xffffffff << (32 - clo32(mask));
+    }
+    if (flags & BP_MEM_READ) {
+        /* Translated code may load these addresses directly. */
+        tb_flush_direct_loads(cs, dbreaka & mask, ~mask + 1);
     }
     if (cpu_watchpoint_insert(cs, dbreaka & mask, ~mask + 1,
                               flags, &env->cpu_watchpoint[i])) {

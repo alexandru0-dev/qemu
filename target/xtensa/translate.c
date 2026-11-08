@@ -37,6 +37,10 @@
 #include "qemu/qemu-print.h"
 #include "semihosting/semihost.h"
 #include "exec/translator.h"
+#include "exec/tb-flush.h"
+#include "hw/core/tcg-cpu-ops.h"
+#include "exec/memory.h"
+#include "qemu/rcu.h"
 
 #include "exec/helper-proto.h"
 #include "exec/helper-gen.h"
@@ -1378,6 +1382,7 @@ static void xtensa_tr_init_disas_context(DisasContextBase *dcbase,
     uint32_t tb_flags = dc->base.tb->flags;
 
     dc->config = cpu_env(cpu)->config;
+    dc->cs = cpu;
     dc->pc = dc->base.pc_first;
     dc->ring = tb_flags & XTENSA_TBFLAG_RING_MASK;
     dc->cring = (tb_flags & XTENSA_TBFLAG_EXCM) ? 0 : dc->ring;
@@ -1952,6 +1957,63 @@ static void translate_lct(DisasContext *dc, const OpcodeArg arg[],
     tcg_gen_movi_i32(arg[0].out, 0);
 }
 
+/*
+ * Host address of a guest load of @len bytes at the translate-time constant
+ * @vaddr, if translated code may read it from host RAM without the softmmu
+ * TLB; NULL otherwise. That requires the access rights of a core with region
+ * protection or no protection at all, as of now, to allow the load (changes
+ * flush, see HELPER(wtlb)); no watchpoint on the address (new ones flush);
+ * no plugin; and the address to be plain RAM in the same memory region as
+ * this TB's code, whose mapping the TB already depends on.
+ */
+static void *xtensa_direct_load_ptr(DisasContext *dc, uint32_t vaddr,
+                                    unsigned len)
+{
+#if defined(CONFIG_USER_ONLY) || HOST_BIG_ENDIAN != TARGET_BIG_ENDIAN
+    return NULL;
+#else
+    CPUXtensaState *env = cpu_env(dc->cs);
+    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
+    AddressSpace *as;
+    MemoryRegion *mr, *code_mr;
+    uint32_t paddr, code_paddr, page_size;
+    hwaddr xlat, code_xlat, l;
+    unsigned access;
+
+    if (dc->base.plugin_enabled ||
+        option_enabled(dc, XTENSA_OPTION_MMU) ||
+        option_enabled(dc, XTENSA_OPTION_MPU) ||
+        option_enabled(dc, XTENSA_OPTION_CACHEATTR) ||
+        (vaddr & ~TARGET_PAGE_MASK) + len > TARGET_PAGE_SIZE ||
+        cpu_watchpoint_address_matches(dc->cs, vaddr, len)) {
+        return NULL;
+    }
+    if (xtensa_get_physical_addr(env, false, vaddr, 0, dc->cring,
+                                 &paddr, &page_size, &access) ||
+        xtensa_get_physical_addr(env, false, dc->base.pc_first, 2, dc->cring,
+                                 &code_paddr, &page_size, &access)) {
+        return NULL;
+    }
+
+    RCU_READ_LOCK_GUARD();
+    as = cpu_get_address_space(dc->cs, cpu_asidx_from_attrs(dc->cs, attrs));
+    l = len;
+    mr = address_space_translate(as, paddr, &xlat, &l, false, attrs);
+    if (l < len || !memory_region_is_ram(mr) || memory_region_is_romd(mr) ||
+        memory_region_is_ram_device(mr)) {
+        return NULL;
+    }
+    l = 1;
+    code_mr = address_space_translate(as, code_paddr, &code_xlat, &l, false,
+                                      attrs);
+    if (code_mr != mr) {
+        return NULL;
+    }
+    tb_note_direct_load(vaddr, len);
+    return (uint8_t *)memory_region_get_ram_ptr(mr) + xlat;
+#endif
+}
+
 static void translate_l32r(DisasContext *dc, const OpcodeArg arg[],
                            const uint32_t par[])
 {
@@ -1961,6 +2023,12 @@ static void translate_l32r(DisasContext *dc, const OpcodeArg arg[],
         tmp = tcg_temp_new();
         tcg_gen_addi_i32(tmp, cpu_SR[LITBASE], arg[1].raw_imm - 1);
     } else {
+        void *host = xtensa_direct_load_ptr(dc, arg[1].imm, 4);
+
+        if (host) {
+            tcg_gen_ld_i32(arg[0].out, tcg_constant_ptr(host), 0);
+            return;
+        }
         tmp = tcg_constant_i32(arg[1].imm);
     }
     tcg_gen_qemu_ld_i32(arg[0].out, tmp, dc->cring, MO_TEUL);

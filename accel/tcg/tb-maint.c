@@ -755,6 +755,47 @@ static void tb_remove(TranslationBlock *tb)
 }
 #endif /* CONFIG_USER_ONLY */
 
+/*
+ * Inclusive bounds of guest addresses that translations load directly;
+ * see tb-flush.h.
+ */
+static QemuSpin direct_load_lock; /* zero is unlocked */
+static bool direct_load_any;
+static vaddr direct_load_lo, direct_load_hi;
+
+void tb_note_direct_load(vaddr addr, vaddr len)
+{
+    vaddr end = addr + len - 1;
+
+    if (len == 0) {
+        return;
+    }
+    qemu_spin_lock(&direct_load_lock);
+    if (!direct_load_any) {
+        direct_load_lo = addr;
+        direct_load_hi = end;
+        direct_load_any = true;
+    } else {
+        direct_load_lo = MIN(direct_load_lo, addr);
+        direct_load_hi = MAX(direct_load_hi, end);
+    }
+    qemu_spin_unlock(&direct_load_lock);
+}
+
+void tb_flush_direct_loads(CPUState *cs, vaddr addr, vaddr len)
+{
+    bool hit;
+
+    qemu_spin_lock(&direct_load_lock);
+    hit = direct_load_any &&
+          (len == 0 ||
+           (addr <= direct_load_hi && addr + len - 1 >= direct_load_lo));
+    qemu_spin_unlock(&direct_load_lock);
+    if (hit) {
+        tb_flush(cs);
+    }
+}
+
 /* flush all the translation blocks */
 static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
 {
@@ -776,6 +817,9 @@ static void do_tb_flush(CPUState *cpu, run_on_cpu_data tb_flush_count)
 
     tcg_region_reset_all();
     /* XXX: flush processor icache at this point if cache flush is expensive */
+    qemu_spin_lock(&direct_load_lock);
+    direct_load_any = false;
+    qemu_spin_unlock(&direct_load_lock);
     qatomic_inc(&tb_ctx.tb_flush_count);
 
 done:

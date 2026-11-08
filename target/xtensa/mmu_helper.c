@@ -34,6 +34,7 @@
 #include "qemu/host-utils.h"
 #include "exec/exec-all.h"
 #include "exec/page-protection.h"
+#include "exec/tb-flush.h"
 
 #define XTENSA_MPU_SEGMENT_MASK 0x0000001f
 #define XTENSA_MPU_ACC_RIGHTS_MASK 0x00000f00
@@ -408,6 +409,8 @@ static void reset_tlb_region_way0(CPUXtensaState *env,
 
 void reset_mmu(CPUXtensaState *env)
 {
+    /* As in HELPER(wtlb): access rights checked at translate time change. */
+    tb_flush_direct_loads(env_cpu(env), 0, 0);
     if (xtensa_option_enabled(env->config, XTENSA_OPTION_MMU)) {
         env->sregs[RASID] = 0x04030201;
         env->sregs[ITLBCFG] = 0;
@@ -561,6 +564,11 @@ void HELPER(wtlb)(CPUXtensaState *env, uint32_t p, uint32_t v, uint32_t dtlb)
     uint32_t wi;
     uint32_t ei;
     if (split_tlb_entry_spec(env, v, dtlb, &vpn, &wi, &ei)) {
+        /*
+         * Translated code may load from RAM directly after checking the
+         * access rights at translate time; those rights may change here.
+         */
+        tb_flush_direct_loads(env_cpu(env), 0, 0);
         xtensa_tlb_set_entry(env, dtlb, wi, ei, vpn, p);
     }
 }

@@ -22,6 +22,7 @@
 struct DisasContext {
     DisasContextBase base;
     const XtensaConfig *config;
+    CPUState *cs;
     uint32_t pc;
     int cring;
     int ring;
