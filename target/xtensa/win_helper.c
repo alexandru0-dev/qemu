@@ -84,11 +84,62 @@ void xtensa_sync_phys_from_window(CPUXtensaState *env)
     copy_phys_from_window(env, env->sregs[WINDOW_BASE] * 4, 0, 16);
 }
 
+/*
+ * env->regs holds the current window and is authoritative for it; phys_regs is
+ * authoritative for every other physical register (readers of phys_regs call
+ * xtensa_sync_phys_from_window first). A rotation by up to three quads keeps
+ * the overlapping registers in env->regs, so only the quads leaving the window
+ * are written back and only the quads entering it are loaded.
+ */
 static void xtensa_rotate_window_abs(CPUXtensaState *env, uint32_t position)
 {
-    xtensa_sync_phys_from_window(env);
-    env->sregs[WINDOW_BASE] = windowbase_bound(position, env);
-    xtensa_sync_window_from_phys(env);
+    uint32_t nquad = env->config->nareg / 4;
+    uint32_t old = env->sregs[WINDOW_BASE];
+    uint32_t new = windowbase_bound(position, env);
+    uint32_t d = (new - old) & (nquad - 1);
+
+    env->sregs[WINDOW_BASE] = new;
+    if (d == 0) {
+        return;
+    }
+    /* Copy whole quads with constant sizes so that no library call is made. */
+    if (nquad >= 8 && d <= 3) {
+        int q;
+
+        for (q = 0; q < d; q++) {
+            memcpy(env->phys_regs + (((old + q) & (nquad - 1)) * 4),
+                   env->regs + q * 4, 4 * sizeof(uint32_t));
+        }
+        for (q = 0; q < 4 - d; q++) {
+            memcpy(env->regs + q * 4, env->regs + (q + d) * 4,
+                   4 * sizeof(uint32_t));
+        }
+        for (q = 4 - d; q < 4; q++) {
+            memcpy(env->regs + q * 4,
+                   env->phys_regs + (((new + q) & (nquad - 1)) * 4),
+                   4 * sizeof(uint32_t));
+        }
+    } else if (nquad >= 8 && d >= nquad - 3) {
+        uint32_t e = nquad - d;
+        int q;
+
+        for (q = 4 - e; q < 4; q++) {
+            memcpy(env->phys_regs + (((old + q) & (nquad - 1)) * 4),
+                   env->regs + q * 4, 4 * sizeof(uint32_t));
+        }
+        for (q = 3; q >= (int)e; q--) {
+            memcpy(env->regs + q * 4, env->regs + (q - e) * 4,
+                   4 * sizeof(uint32_t));
+        }
+        for (q = 0; q < e; q++) {
+            memcpy(env->regs + q * 4,
+                   env->phys_regs + (((new + q) & (nquad - 1)) * 4),
+                   4 * sizeof(uint32_t));
+        }
+    } else {
+        copy_phys_from_window(env, old * 4, 0, 16);
+        copy_window_from_phys(env, 0, new * 4, 16);
+    }
 }
 
 void xtensa_rotate_window(CPUXtensaState *env, uint32_t delta)
