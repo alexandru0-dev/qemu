@@ -2411,18 +2411,61 @@ static MemTxResult flatview_write(FlatView *fv, hwaddr addr, MemTxAttrs attrs,
 static bool flatview_access_valid(FlatView *fv, hwaddr addr, hwaddr len,
                                   bool is_write, MemTxAttrs attrs);
 
+/*
+ * Find the device region behind a subpage access, without another walk of the
+ * flat view, when the access is one plain device access: it stays within a
+ * single section and the region will not split it.  Anything else returns NULL
+ * and takes the general path.
+ */
+static MemoryRegion *subpage_find_mmio(subpage_t *subpage, hwaddr addr,
+                                       unsigned len, bool is_write,
+                                       MemTxAttrs attrs, hwaddr *mr_addr)
+{
+    AddressSpaceDispatch *d = flatview_to_dispatch(subpage->fv);
+    MemoryRegionSection *section =
+        &d->map.sections[subpage->sub_section[SUBPAGE_IDX(addr)]];
+    MemoryRegion *mr = section->mr;
+    hwaddr offset = addr + subpage->base - section->offset_within_address_space;
+
+    if (attrs.memory || memory_access_is_direct(mr, is_write) ||
+        memory_region_is_iommu(mr) ||
+        int128_gt(int128_make64(offset + len), section->size)) {
+        return NULL;
+    }
+    *mr_addr = offset + section->offset_within_region;
+    if (memory_access_size(mr, len, *mr_addr) != len) {
+        return NULL;
+    }
+    return mr;
+}
+
 static MemTxResult subpage_read(void *opaque, hwaddr addr, uint64_t *data,
                                 unsigned len, MemTxAttrs attrs)
 {
     subpage_t *subpage = opaque;
     uint8_t buf[8];
     MemTxResult res;
+    MemoryRegion *mr;
+    hwaddr mr_addr;
 
 #if defined(DEBUG_SUBPAGE)
     printf("%s: subpage %p len %u addr " HWADDR_FMT_plx "\n", __func__,
            subpage, len, addr);
 #endif
-    res = flatview_read(subpage->fv, addr + subpage->base, attrs, buf, len);
+    mr = subpage_find_mmio(subpage, addr, len, false, attrs, &mr_addr);
+    if (mr) {
+        uint64_t val;
+        bool release_lock = prepare_mmio_access(mr);
+
+        res = memory_region_dispatch_read(mr, mr_addr, &val, size_memop(len),
+                                          attrs);
+        stn_he_p(buf, len, val);
+        if (release_lock) {
+            bql_unlock();
+        }
+    } else {
+        res = flatview_read(subpage->fv, addr + subpage->base, attrs, buf, len);
+    }
     if (res) {
         return res;
     }
@@ -2435,6 +2478,8 @@ static MemTxResult subpage_write(void *opaque, hwaddr addr,
 {
     subpage_t *subpage = opaque;
     uint8_t buf[8];
+    MemoryRegion *mr;
+    hwaddr mr_addr;
 
 #if defined(DEBUG_SUBPAGE)
     printf("%s: subpage %p len %u addr " HWADDR_FMT_plx
@@ -2442,6 +2487,18 @@ static MemTxResult subpage_write(void *opaque, hwaddr addr,
            __func__, subpage, len, addr, value);
 #endif
     stn_p(buf, len, value);
+    mr = subpage_find_mmio(subpage, addr, len, true, attrs, &mr_addr);
+    if (mr) {
+        MemTxResult res;
+        bool release_lock = prepare_mmio_access(mr);
+
+        res = memory_region_dispatch_write(mr, mr_addr, ldn_he_p(buf, len),
+                                           size_memop(len), attrs);
+        if (release_lock) {
+            bql_unlock();
+        }
+        return res;
+    }
     return flatview_write(subpage->fv, addr + subpage->base, attrs, buf, len);
 }
 
@@ -2450,10 +2507,17 @@ static bool subpage_accepts(void *opaque, hwaddr addr,
                             MemTxAttrs attrs)
 {
     subpage_t *subpage = opaque;
+    MemoryRegion *mr;
+    hwaddr mr_addr;
 #if defined(DEBUG_SUBPAGE)
     printf("%s: subpage %p %c len %u addr " HWADDR_FMT_plx "\n",
            __func__, subpage, is_write ? 'w' : 'r', len, addr);
 #endif
+
+    mr = subpage_find_mmio(subpage, addr, len, is_write, attrs, &mr_addr);
+    if (mr) {
+        return memory_region_access_valid(mr, mr_addr, len, is_write, attrs);
+    }
 
     return flatview_access_valid(subpage->fv, addr + subpage->base,
                                  len, is_write, attrs);
