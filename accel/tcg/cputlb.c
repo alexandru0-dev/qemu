@@ -2069,6 +2069,13 @@ static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
 
         if (mr->subpage) {
             leaf = io_subpage_leaf(full, mr, &leaf_offset, size);
+        } else if (!full->leaf_mr) {
+            /* For ld4_mmio_fast: the whole region, at its own offsets. */
+            full->leaf_mr = mr;
+            full->leaf_lo = 0;
+            full->leaf_hi = memory_region_size(mr);
+            full->leaf_delta = 0;
+            full->leaf_max = mr->ops->valid.max_access_size ?: 4;
         }
         if (leaf && memory_region_try_read_lockless(leaf, leaf_offset, size,
                                                     MO_BE | ctz32(size), attrs,
@@ -2968,6 +2975,51 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
         b = do_st16_leN(cpu, &l.page[0], val, l.mmu_idx, l.memop, ra);
         do_st_leN(cpu, &l.page[1], b, l.mmu_idx, l.memop, ra);
     }
+}
+
+/*
+ * An aligned 32-bit load from a device register that reads without the BQL
+ * (see do_ld_mmio_beN) still costs the full slow path: mmu_lookup, the
+ * section lookup and the subpage walk. When the TLB entry hits with TLB_MMIO
+ * as its only flag, the access is allowed without I/O recompilation, and the
+ * region was resolved by an earlier access through this entry, read it
+ * directly. Returns false to take the generic path.
+ */
+static bool ld4_mmio_fast(CPUState *cpu, vaddr addr, MemOpIdx oi,
+                          uintptr_t ra, uint32_t *val)
+{
+    MemOp memop = get_memop(oi);
+    int mmu_idx = get_mmuidx(oi);
+    CPUTLBEntryFull *full;
+    uint64_t tlb_addr, v;
+    hwaddr off;
+
+    if ((addr & 3) || memop_alignment_bits(memop) > 2 || !cpu->neg.can_do_io) {
+        return false;
+    }
+    tlb_addr = tlb_read_idx(tlb_entry(cpu, mmu_idx, addr), MMU_DATA_LOAD);
+    if (!tlb_hit(tlb_addr, addr) ||
+        (tlb_addr & TLB_FLAGS_MASK) != TLB_MMIO) {
+        return false;
+    }
+    full = &cpu->neg.tlb.d[mmu_idx].fulltlb[tlb_index(cpu, mmu_idx, addr)];
+    if (!full->leaf_mr) {
+        return false;
+    }
+    off = (full->xlat_section & TARGET_PAGE_MASK) + addr;
+    if (off < full->leaf_lo || off + 4 > full->leaf_hi ||
+        full->leaf_max < 4 || ((off + full->leaf_delta) & 3)) {
+        return false;
+    }
+    cpu_req_mo(TCG_MO_LD_LD | TCG_MO_ST_LD);
+    cpu->mem_io_pc = ra;
+    if (!memory_region_try_read_lockless(full->leaf_mr, off + full->leaf_delta,
+                                         4, (memop & MO_BSWAP) | MO_32,
+                                         full->attrs, &v)) {
+        return false;
+    }
+    *val = v;
+    return true;
 }
 
 #include "ldst_common.c.inc"
