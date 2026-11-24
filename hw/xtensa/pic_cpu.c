@@ -43,6 +43,13 @@ static int xtensa_pending_level(CPUXtensaState *env)
         (env->sregs[INTENABLE] | env->config->inttype_mask[INTTYPE_NMI]);
     int level;
 
+    /*
+     * Usually nothing is both set and enabled: RSIL, WSR.PS and WSR.INTENABLE
+     * all lead here, and the guest's critical sections issue them constantly.
+     */
+    if (likely(!int_set_enabled)) {
+        return 0;
+    }
     if (minlevel >= env->config->nmi_level) {
         minlevel = env->config->nmi_level - 1;
     }
