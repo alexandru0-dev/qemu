@@ -1493,6 +1493,45 @@ MemTxResult memory_region_dispatch_read(MemoryRegion *mr,
     return r;
 }
 
+bool memory_region_try_read_lockless(MemoryRegion *mr, hwaddr addr,
+                                     unsigned size, MemOp op,
+                                     MemTxAttrs attrs, uint64_t *pval)
+{
+    unsigned min, max;
+    uint64_t tmp;
+
+    if (mr->subpage) {
+        mr = memory_region_subpage_leaf(mr, &addr, size, false, attrs);
+        if (!mr) {
+            return false;
+        }
+    }
+    if (!mr->ops->read_lockless || mr->alias || mr->flush_coalesced_mmio ||
+        mr->ops->valid.accepts || (addr & (size - 1)) ||
+        trace_event_get_state_backends(TRACE_MEMORY_REGION_OPS_READ)) {
+        return false;
+    }
+    /*
+     * Only accesses the device takes whole, as access_with_adjusted_size would,
+     * and that memory_region_access_valid accepts; anything else takes the
+     * normal path, which also logs it.
+     */
+    min = mr->ops->impl.min_access_size ? : 1;
+    max = mr->ops->impl.max_access_size ? : 4;
+    if (size < min || size > max ||
+        (mr->ops->valid.max_access_size &&
+         (size > mr->ops->valid.max_access_size ||
+          size < mr->ops->valid.min_access_size))) {
+        return false;
+    }
+    if (!mr->ops->read_lockless(mr->opaque, addr, size, &tmp)) {
+        return false;
+    }
+    *pval = tmp & MAKE_64BIT_MASK(0, size * 8);
+    adjust_endianness(mr, pval, op);
+    return true;
+}
+
 /* Return true if an eventfd was signalled */
 static bool memory_region_dispatch_write_eventfds(MemoryRegion *mr,
                                                     hwaddr addr,

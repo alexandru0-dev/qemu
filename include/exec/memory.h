@@ -285,6 +285,18 @@ struct MemoryRegionOps {
                                     unsigned size,
                                     MemTxAttrs attrs);
 
+    /*
+     * Optional read without the BQL, tried first by the TCG softmmu for
+     * naturally aligned guest loads (see memory_region_try_read_lockless).
+     * For registers whose read has no side effects and only loads device
+     * state that may be read safely while another thread updates it.
+     * Return false to use the normal read under the BQL instead.
+     */
+    bool (*read_lockless)(void *opaque,
+                          hwaddr addr,
+                          unsigned size,
+                          uint64_t *data);
+
     enum device_endian endianness;
     /* Guest-visible constraints: */
     struct {
@@ -2985,6 +2997,27 @@ MemTxResult address_space_write_cached_slow(MemoryRegionCache *cache,
 
 int memory_access_size(MemoryRegion *mr, unsigned l, hwaddr addr);
 bool prepare_mmio_access(MemoryRegion *mr);
+
+/*
+ * Within an RCU read-side critical section, find the plain leaf region behind
+ * one aligned access to subpage @mr, updating @offset; NULL if there is none.
+ * Does not require the BQL and leaves validation callbacks and coalesced MMIO
+ * to the caller.
+ */
+MemoryRegion *memory_region_subpage_leaf(MemoryRegion *mr, hwaddr *offset,
+                                         unsigned size, bool is_write,
+                                         MemTxAttrs attrs);
+
+/*
+ * Read @size bytes at @addr of @mr without the BQL through the region's
+ * read_lockless hook, resolving a subpage first. On success stores the value
+ * in @op's byte order, as memory_region_dispatch_read would, and returns true;
+ * returns false when the access needs the normal path (including when
+ * memory_region_ops_read tracing is enabled). Caller holds the RCU read lock.
+ */
+bool memory_region_try_read_lockless(MemoryRegion *mr, hwaddr addr,
+                                     unsigned size, MemOp op,
+                                     MemTxAttrs attrs, uint64_t *pval);
 
 static inline bool memory_access_is_direct(MemoryRegion *mr, bool is_write)
 {

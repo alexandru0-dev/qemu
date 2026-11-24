@@ -2000,6 +2000,20 @@ static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
     section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
     mr = section->mr;
 
+    /*
+     * A naturally aligned load of at most 4 bytes is a single device access in
+     * int_ld_mmio_beN; try the region's lockless read before taking the BQL.
+     * cpu_exec holds the RCU read lock that the subpage lookup needs.
+     */
+    if (size <= 4 && !(addr & (size - 1))) {
+        uint64_t val;
+
+        if (memory_region_try_read_lockless(mr, mr_offset, size,
+                                            MO_BE | ctz32(size), attrs, &val)) {
+            return (ret_be << (size * 8)) | val;
+        }
+    }
+
     BQL_LOCK_GUARD();
     return int_ld_mmio_beN(cpu, full, ret_be, addr, size, mmu_idx,
                            type, ra, mr, mr_offset);

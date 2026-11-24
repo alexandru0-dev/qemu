@@ -2439,6 +2439,25 @@ static MemoryRegion *subpage_find_mmio(subpage_t *subpage, hwaddr addr,
     return mr;
 }
 
+MemoryRegion *memory_region_subpage_leaf(MemoryRegion *mr, hwaddr *offset,
+                                         unsigned size, bool is_write,
+                                         MemTxAttrs attrs)
+{
+    MemoryRegion *leaf;
+    hwaddr leaf_offset;
+
+    assert(mr->subpage);
+    if (*offset & (size - 1)) {
+        return NULL;
+    }
+    leaf = subpage_find_mmio(mr->opaque, *offset, size, is_write, attrs,
+                             &leaf_offset);
+    if (leaf) {
+        *offset = leaf_offset;
+    }
+    return leaf;
+}
+
 static MemTxResult subpage_read(void *opaque, hwaddr addr, uint64_t *data,
                                 unsigned len, MemTxAttrs attrs)
 {
