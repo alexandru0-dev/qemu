@@ -32,11 +32,23 @@ typedef struct Esp32FlashEncryptionState {
 
 } Esp32FlashEncryptionState;
 
-/* returns NULL unless there is exactly one device */
+/*
+ * Returns NULL unless there is exactly one device. SPI commands and cache
+ * syncs call this on every flash access; a path search walks the whole QOM
+ * tree. The device is created with the machine and never unplugged, so the
+ * first device found stays the answer. NULL is not kept, as the device may
+ * not exist yet.
+ */
 static inline Esp32FlashEncryptionState *esp32_flash_encryption_find(void)
 {
-    Object *o = object_resolve_path_type("", TYPE_ESP32_FLASH_ENCRYPTION, NULL);
-    return o ? ESP32_FLASH_ENCRYPTION(o) : NULL;
+    static Esp32FlashEncryptionState *found;
+
+    if (!found) {
+        Object *o = object_resolve_path_type("", TYPE_ESP32_FLASH_ENCRYPTION,
+                                             NULL);
+        found = o ? ESP32_FLASH_ENCRYPTION(o) : NULL;
+    }
+    return found;
 }
 
 bool esp32_flash_encryption_enabled(struct Esp32FlashEncryptionState* s);
