@@ -42,18 +42,27 @@ static inline unsigned int tb_jmp_cache_hash_page(vaddr pc)
     return (tmp >> (TARGET_PAGE_BITS - TB_JMP_PAGE_BITS)) & TB_JMP_PAGE_MASK;
 }
 
-static inline unsigned int tb_jmp_cache_hash_func(vaddr pc)
+/*
+ * The CPU state that selects a TB goes into the bits that vary within a page,
+ * so that one PC reached in several states can keep several entries.  Clearing
+ * a page by its TB_JMP_PAGE_MASK bits still covers all of them.
+ */
+static inline unsigned int tb_jmp_cache_hash_func(vaddr pc, uint64_t cs_base,
+                                                  uint32_t flags)
 {
     vaddr tmp;
+    uint32_t state = ((uint32_t)cs_base ^ flags) * 0x9e3779b1u;
+
     tmp = pc ^ (pc >> (TARGET_PAGE_BITS - TB_JMP_PAGE_BITS));
     return (((tmp >> (TARGET_PAGE_BITS - TB_JMP_PAGE_BITS)) & TB_JMP_PAGE_MASK)
-           | (tmp & TB_JMP_ADDR_MASK));
+           | ((tmp ^ (state >> (32 - TB_JMP_PAGE_BITS))) & TB_JMP_ADDR_MASK));
 }
 
 #else
 
 /* In user-mode we can get better hashing because we do not have a TLB */
-static inline unsigned int tb_jmp_cache_hash_func(vaddr pc)
+static inline unsigned int tb_jmp_cache_hash_func(vaddr pc, uint64_t cs_base,
+                                                  uint32_t flags)
 {
     return (pc ^ (pc >> TB_JMP_CACHE_BITS)) & (TB_JMP_CACHE_SIZE - 1);
 }
