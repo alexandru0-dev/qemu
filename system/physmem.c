@@ -2439,6 +2439,61 @@ static MemoryRegion *subpage_find_mmio(subpage_t *subpage, hwaddr addr,
     return mr;
 }
 
+MemoryRegion *memory_region_subpage_leaf_range(MemoryRegion *mr, hwaddr offset,
+                                               MemTxAttrs attrs, hwaddr *lo,
+                                               hwaddr *hi, hwaddr *delta,
+                                               unsigned *max_size)
+{
+    subpage_t *subpage = mr->opaque;
+    AddressSpaceDispatch *d;
+    MemoryRegionSection *section;
+    MemoryRegion *leaf;
+    uint16_t idx;
+    hwaddr l, h, sec_start, sec_size;
+
+    assert(mr->subpage);
+    if (attrs.memory || offset >= TARGET_PAGE_SIZE) {
+        return NULL;
+    }
+    d = flatview_to_dispatch(subpage->fv);
+    idx = subpage->sub_section[SUBPAGE_IDX(offset)];
+    section = &d->map.sections[idx];
+    leaf = section->mr;
+    if (memory_access_is_direct(leaf, false) ||
+        memory_access_is_direct(leaf, true) ||
+        memory_region_is_iommu(leaf) ||
+        int128_gt(section->size, int128_make64(1ULL << 62))) {
+        return NULL;
+    }
+    /* The run of subpage offsets mapped to this section, within its bounds. */
+    l = h = SUBPAGE_IDX(offset);
+    while (l > 0 && subpage->sub_section[l - 1] == idx) {
+        l--;
+    }
+    while (h + 1 < TARGET_PAGE_SIZE && subpage->sub_section[h + 1] == idx) {
+        h++;
+    }
+    h++;
+    sec_start = section->offset_within_address_space - subpage->base;
+    sec_size = int128_get64(section->size);
+    if (section->offset_within_address_space >= subpage->base) {
+        l = MAX(l, sec_start);
+        h = MIN(h, sec_start + sec_size);
+    } else {
+        h = MIN(h, sec_size - (subpage->base -
+                               section->offset_within_address_space));
+    }
+    if (offset < l || offset >= h) {
+        return NULL;
+    }
+    *lo = l;
+    *hi = h;
+    *delta = subpage->base - section->offset_within_address_space +
+             section->offset_within_region;
+    *max_size = leaf->ops->valid.max_access_size ? : 4;
+    return leaf;
+}
+
 MemoryRegion *memory_region_subpage_leaf(MemoryRegion *mr, hwaddr *offset,
                                          unsigned size, bool is_write,
                                          MemTxAttrs attrs)

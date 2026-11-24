@@ -3009,6 +3009,20 @@ MemoryRegion *memory_region_subpage_leaf(MemoryRegion *mr, hwaddr *offset,
                                          MemTxAttrs attrs);
 
 /*
+ * Like memory_region_subpage_leaf, for caching: the plain leaf region at
+ * @offset of subpage @mr, the range [@lo, @hi) of subpage offsets that map to
+ * the same section, @delta to add to such an offset to get the leaf's offset,
+ * and the largest access size the leaf takes whole. An aligned access of at
+ * most @max_size bytes within the range, whose leaf offset is aligned too,
+ * resolves as memory_region_subpage_leaf would. NULL when there is no plain
+ * leaf.
+ */
+MemoryRegion *memory_region_subpage_leaf_range(MemoryRegion *mr, hwaddr offset,
+                                               MemTxAttrs attrs, hwaddr *lo,
+                                               hwaddr *hi, hwaddr *delta,
+                                               unsigned *max_size);
+
+/*
  * Read @size bytes at @addr of @mr without the BQL through the region's
  * read_lockless hook, resolving a subpage first. On success stores the value
  * in @op's byte order, as memory_region_dispatch_read would, and returns true;

@@ -1180,6 +1180,7 @@ void tlb_set_page_full(CPUState *cpu, int mmu_idx,
      */
     desc->fulltlb[index] = *full;
     full = &desc->fulltlb[index];
+    full->leaf_mr = NULL;
     full->xlat_section = iotlb - addr_page;
     full->phys_addr = paddr_page;
 
@@ -1951,6 +1952,48 @@ static void *atomic_mmu_lookup(CPUState *cpu, vaddr addr, MemOpIdx oi,
  * Load @size bytes from @addr, which is memory-mapped i/o.
  * The bytes are concatenated in big-endian order with @ret_be.
  */
+/*
+ * Resolve an aligned access of @size bytes at @offset in subpage @mr to its
+ * plain leaf region, as memory_region_subpage_leaf does, through the leaf
+ * cached in the TLB entry: devices that share a page with others otherwise
+ * pay a section-table walk on every access. On success updates @offset to the
+ * leaf's offset.
+ */
+static MemoryRegion *io_subpage_leaf(CPUTLBEntryFull *full, MemoryRegion *mr,
+                                     hwaddr *offset, unsigned size)
+{
+    hwaddr off = *offset;
+
+    if (off & (size - 1)) {
+        return NULL;
+    }
+    if (!full->leaf_mr || off < full->leaf_lo || off + size > full->leaf_hi) {
+        hwaddr lo, hi, delta;
+        unsigned max;
+        MemoryRegion *leaf = memory_region_subpage_leaf_range(mr, off,
+                                                              full->attrs,
+                                                              &lo, &hi,
+                                                              &delta, &max);
+
+        if (!leaf) {
+            return NULL;
+        }
+        full->leaf_mr = leaf;
+        full->leaf_lo = lo;
+        full->leaf_hi = hi;
+        full->leaf_delta = delta;
+        full->leaf_max = max;
+        if (off + size > hi) {
+            return NULL;
+        }
+    }
+    if (size > full->leaf_max || ((off + full->leaf_delta) & (size - 1))) {
+        return NULL;
+    }
+    *offset = off + full->leaf_delta;
+    return full->leaf_mr;
+}
+
 static uint64_t int_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
                                 uint64_t ret_be, vaddr addr, int size,
                                 int mmu_idx, MMUAccessType type, uintptr_t ra,
@@ -1961,13 +2004,27 @@ static uint64_t int_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
         unsigned this_size;
         uint64_t val;
         MemTxResult r;
+        MemoryRegion *access_mr = mr;
+        hwaddr access_offset = mr_offset;
 
         /* Read aligned pieces up to 8 bytes. */
         this_mop = ctz32(size | (int)addr | 8);
         this_size = 1 << this_mop;
         this_mop |= MO_BE;
 
-        r = memory_region_dispatch_read(mr, mr_offset, &val,
+        if (mr->subpage) {
+            MemoryRegion *leaf = io_subpage_leaf(full, mr, &access_offset,
+                                                 this_size);
+
+            /* Keep validation callbacks and coalesced-buffer ordering. */
+            if (leaf && !leaf->ops->valid.accepts &&
+                !leaf->flush_coalesced_mmio) {
+                access_mr = leaf;
+            } else {
+                access_offset = mr_offset;
+            }
+        }
+        r = memory_region_dispatch_read(access_mr, access_offset, &val,
                                         this_mop, full->attrs);
         if (unlikely(r != MEMTX_OK)) {
             io_failed(cpu, full, addr, this_size, type, mmu_idx, r, ra);
@@ -2006,10 +2063,16 @@ static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
      * cpu_exec holds the RCU read lock that the subpage lookup needs.
      */
     if (size <= 4 && !(addr & (size - 1))) {
+        MemoryRegion *leaf = mr;
+        hwaddr leaf_offset = mr_offset;
         uint64_t val;
 
-        if (memory_region_try_read_lockless(mr, mr_offset, size,
-                                            MO_BE | ctz32(size), attrs, &val)) {
+        if (mr->subpage) {
+            leaf = io_subpage_leaf(full, mr, &leaf_offset, size);
+        }
+        if (leaf && memory_region_try_read_lockless(leaf, leaf_offset, size,
+                                                    MO_BE | ctz32(size), attrs,
+                                                    &val)) {
             return (ret_be << (size * 8)) | val;
         }
     }
@@ -2515,13 +2578,27 @@ static uint64_t int_st_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
         MemOp this_mop;
         unsigned this_size;
         MemTxResult r;
+        MemoryRegion *access_mr = mr;
+        hwaddr access_offset = mr_offset;
 
         /* Store aligned pieces up to 8 bytes. */
         this_mop = ctz32(size | (int)addr | 8);
         this_size = 1 << this_mop;
         this_mop |= MO_LE;
 
-        r = memory_region_dispatch_write(mr, mr_offset, val_le,
+        if (mr->subpage) {
+            MemoryRegion *leaf = io_subpage_leaf(full, mr, &access_offset,
+                                                 this_size);
+
+            /* Keep validation callbacks and coalesced-buffer ordering. */
+            if (leaf && !leaf->ops->valid.accepts &&
+                !leaf->flush_coalesced_mmio) {
+                access_mr = leaf;
+            } else {
+                access_offset = mr_offset;
+            }
+        }
+        r = memory_region_dispatch_write(access_mr, access_offset, val_le,
                                          this_mop, full->attrs);
         if (unlikely(r != MEMTX_OK)) {
             io_failed(cpu, full, addr, this_size, MMU_DATA_STORE,

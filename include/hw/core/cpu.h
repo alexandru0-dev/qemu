@@ -243,6 +243,17 @@ struct CPUTLBEntryFull {
     uint8_t slow_flags[MMU_ACCESS_COUNT];
 
     /*
+     * For an MMIO page shared by several regions (a subpage): the last plain
+     * leaf region resolved in it, the range [@leaf_lo, @leaf_hi) of offsets in
+     * the subpage that map to it, the offset delta and the largest access it
+     * takes whole. Cleared whenever the entry is refilled; a memory map change
+     * flushes the TLB. See io_subpage_leaf() in cputlb.c.
+     */
+    struct MemoryRegion *leaf_mr;
+    hwaddr leaf_lo, leaf_hi, leaf_delta;
+    unsigned leaf_max;
+
+    /*
      * Allow target-specific additions to this structure.
      * This may be used to cache items from the guest cpu
      * page tables for later use by the implementation.
