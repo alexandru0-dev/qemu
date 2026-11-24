@@ -120,6 +120,9 @@ void HELPER(waiti)(CPUXtensaState *env, uint32_t pc, uint32_t intlevel)
 
 void HELPER(check_interrupts)(CPUXtensaState *env)
 {
+    if (xtensa_interrupts_unchanged(env)) {
+        return;
+    }
     bql_lock();
     check_interrupts(env);
     bql_unlock();

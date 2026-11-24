@@ -638,6 +638,7 @@ void xtensa_breakpoint_handler(CPUState *cs);
 void xtensa_register_core(XtensaConfigList *node);
 void xtensa_sim_open_console(Chardev *chr);
 void check_interrupts(CPUXtensaState *s);
+bool xtensa_interrupts_unchanged(CPUXtensaState *env);
 void xtensa_irq_init(CPUXtensaState *env);
 void xtensa_cpu_clock_changed(void *opaque, ClockEvent event);
 qemu_irq *xtensa_get_extints(CPUXtensaState *env);

@@ -32,11 +32,14 @@
 #include "qemu/timer.h"
 #include "qemu/atomic.h"
 
-void check_interrupts(CPUXtensaState *env)
+/*
+ * Highest interrupt level that is set, enabled and above the current level,
+ * or 0.
+ */
+static int xtensa_pending_level(CPUXtensaState *env)
 {
-    CPUState *cs = env_cpu(env);
     int minlevel = xtensa_get_cintlevel(env);
-    uint32_t int_set_enabled = env->sregs[INTSET] &
+    uint32_t int_set_enabled = qatomic_read(&env->sregs[INTSET]) &
         (env->sregs[INTENABLE] | env->config->inttype_mask[INTTYPE_NMI]);
     int level;
 
@@ -45,19 +48,50 @@ void check_interrupts(CPUXtensaState *env)
     }
     for (level = env->config->nlevel; level > minlevel; --level) {
         if (env->config->level_mask[level] & int_set_enabled) {
-            env->pending_irq_level = level;
-            cpu_interrupt(cs, CPU_INTERRUPT_HARD);
-            qemu_log_mask(CPU_LOG_INT,
-                    "%s level = %d, cintlevel = %d, "
-                    "pc = %08x, a0 = %08x, ps = %08x, "
-                    "intset = %08x, intenable = %08x, "
-                    "ccount = %08x\n",
-                    __func__, level, xtensa_get_cintlevel(env),
-                    env->pc, env->regs[0], env->sregs[PS],
-                    env->sregs[INTSET], env->sregs[INTENABLE],
-                    env->sregs[CCOUNT]);
-            return;
+            return level;
         }
+    }
+    return 0;
+}
+
+/*
+ * Whether check_interrupts would change nothing, so the vCPU may skip it and
+ * the BQL. Devices raise interrupts in xtensa_set_irq, which updates INTSET
+ * atomically and then runs check_interrupts under the BQL itself. Order our
+ * prior PS/INTENABLE stores before reading INTSET so a concurrent
+ * xtensa_set_irq cannot miss an unmasked interrupt.
+ */
+bool xtensa_interrupts_unchanged(CPUXtensaState *env)
+{
+    int level;
+    bool hard;
+
+    /* Order prior PS/INTENABLE stores before loading INTSET. */
+    smp_mb();
+    level = xtensa_pending_level(env);
+    hard = qatomic_read(&env_cpu(env)->interrupt_request) & CPU_INTERRUPT_HARD;
+    return level == qatomic_read(&env->pending_irq_level) &&
+           hard == (level != 0);
+}
+
+void check_interrupts(CPUXtensaState *env)
+{
+    CPUState *cs = env_cpu(env);
+    int level = xtensa_pending_level(env);
+
+    if (level) {
+        env->pending_irq_level = level;
+        cpu_interrupt(cs, CPU_INTERRUPT_HARD);
+        qemu_log_mask(CPU_LOG_INT,
+                "%s level = %d, cintlevel = %d, "
+                "pc = %08x, a0 = %08x, ps = %08x, "
+                "intset = %08x, intenable = %08x, "
+                "ccount = %08x\n",
+                __func__, level, xtensa_get_cintlevel(env),
+                env->pc, env->regs[0], env->sregs[PS],
+                env->sregs[INTSET], env->sregs[INTENABLE],
+                env->sregs[CCOUNT]);
+        return;
     }
     env->pending_irq_level = 0;
     cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
