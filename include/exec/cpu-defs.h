@@ -55,8 +55,12 @@
 #include "exec/target_long.h"
 
 #if defined(CONFIG_SOFTMMU) && defined(CONFIG_TCG)
+#ifndef CPU_TLB_DYN_MIN_BITS
 #define CPU_TLB_DYN_MIN_BITS 6
+#endif
+#ifndef CPU_TLB_DYN_DEFAULT_BITS
 #define CPU_TLB_DYN_DEFAULT_BITS 8
+#endif
 
 # if HOST_LONG_BITS == 32
 /* Make sure we do not require a double-word shift for the TLB load */
