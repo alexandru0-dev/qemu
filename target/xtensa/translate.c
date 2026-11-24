@@ -343,7 +343,13 @@ static void gen_jump_slot(DisasContext *dc, TCGv dest, int slot)
         tcg_gen_goto_tb(slot);
         tcg_gen_exit_tb(dc->base.tb, slot);
     } else {
-        tcg_gen_exit_tb(NULL, 0);
+        /*
+         * helper_lookup_tb_ptr recomputes pc, cs_base and flags from the CPU
+         * state, so state changes that require a fresh lookup (for example
+         * the window flags after ENTRY) are still honoured, and the target
+         * TB's entry still checks for pending interrupts and exit requests.
+         */
+        tcg_gen_lookup_and_goto_ptr();
     }
     dc->base.is_jmp = DISAS_NORETURN;
 }
