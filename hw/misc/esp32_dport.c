@@ -322,6 +322,13 @@ static void esp32_cache_state_update(Esp32CacheState* cs)
 {
     bool cache_enabled = FIELD_EX32(cs->cache_ctrl_reg, DPORT_PRO_CACHE_CTRL, CACHE_ENA) != 0;
 
+    /*
+     * The guest toggles the cache around every flash operation. Each region
+     * that changes would otherwise commit its own transaction and rebuild
+     * every address space; one transaction rebuilds them once.
+     */
+    memory_region_transaction_begin();
+
     bool drom0_enabled = cache_enabled &&
         FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_DROM0) == 0;
     if (!cs->drom0.mem.enabled && drom0_enabled) {
@@ -341,6 +348,7 @@ static void esp32_cache_state_update(Esp32CacheState* cs)
             FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_DRAM1) == 0;
         memory_region_set_enabled(&cs->dram1.mem, dram1_enabled);
     }
+    memory_region_transaction_commit();
 }
 
 static void esp32_cache_region_reset(Esp32CacheRegionState *crs)
