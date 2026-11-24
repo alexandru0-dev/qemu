@@ -228,6 +228,53 @@ int64_t icount_round(int64_t count)
     return (count + (1 << shift) - 1) >> shift;
 }
 
+/*
+ * Idle pacing for fixed-shift icount with sleep=on.
+ *
+ * An idle warp only recovers the real time spent sleeping.  Real time spent
+ * translating and executing guest code beyond its icount value, and thread
+ * wake-up latency around the warp, is otherwise never returned to the guest,
+ * so timer-heavy guests run persistently slower than real time.
+ *
+ * Track how far QEMU_CLOCK_VIRTUAL lags QEMU_CLOCK_VIRTUAL_RT and shorten or
+ * lengthen idle sleeps to remove it.  Repayment only happens while all vCPUs
+ * are idle and never crosses the next timer deadline, so guest timers still
+ * fire in order with guest code running between them.  The difference is
+ * bounded: anything beyond the bound, such as a host stall, is forgotten
+ * rather than repaid, and cannot compress the guest's timers for longer than
+ * the bound allows.
+ */
+#define ICOUNT_PACE_MAX_DRIFT_NS (100 * SCALE_MS)
+
+static bool icount_pace_started;
+static int64_t icount_pace_offset;
+
+static bool icount_pace_enabled(void)
+{
+    return icount_enabled() == ICOUNT_PRECISE &&
+           replay_mode == REPLAY_MODE_NONE;
+}
+
+/* Real minus guest time, in [-bound, +bound].  Requires the clock seqlock. */
+static int64_t icount_pace_lag_locked(int64_t clock)
+{
+    int64_t lag;
+
+    if (!icount_pace_started) {
+        icount_pace_offset = clock - icount_get_locked();
+        icount_pace_started = true;
+    }
+    lag = clock - icount_get_locked() - icount_pace_offset;
+    if (lag > ICOUNT_PACE_MAX_DRIFT_NS) {
+        icount_pace_offset += lag - ICOUNT_PACE_MAX_DRIFT_NS;
+        lag = ICOUNT_PACE_MAX_DRIFT_NS;
+    } else if (lag < -ICOUNT_PACE_MAX_DRIFT_NS) {
+        icount_pace_offset += lag + ICOUNT_PACE_MAX_DRIFT_NS;
+        lag = -ICOUNT_PACE_MAX_DRIFT_NS;
+    }
+    return lag;
+}
+
 static void icount_warp_rt(void)
 {
     unsigned seq;
@@ -257,6 +304,9 @@ static void icount_warp_rt(void)
         int64_t warp_delta;
 
         warp_delta = clock - timers_state.vm_clock_warp_start;
+        if (icount_pace_enabled()) {
+            warp_delta = MAX(icount_pace_lag_locked(clock), 0);
+        }
         if (deadline >= 0) {
             warp_delta = MIN(warp_delta, deadline);
         }
@@ -380,16 +430,21 @@ void icount_start_warp_timer(void)
              * you will not be sending network packets continuously instead of
              * every 100ms.
              */
+            int64_t sleep_ns = deadline;
+
             seqlock_write_lock(&timers_state.vm_clock_seqlock,
                                &timers_state.vm_clock_lock);
             if (timers_state.vm_clock_warp_start == -1
                 || timers_state.vm_clock_warp_start > clock) {
                 timers_state.vm_clock_warp_start = clock;
             }
+            if (icount_pace_enabled()) {
+                sleep_ns -= icount_pace_lag_locked(clock);
+            }
             seqlock_write_unlock(&timers_state.vm_clock_seqlock,
                                  &timers_state.vm_clock_lock);
             timer_mod_anticipate(timers_state.icount_warp_timer,
-                                 clock + deadline);
+                                 clock + sleep_ns);
         }
     } else if (deadline == 0) {
         qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
