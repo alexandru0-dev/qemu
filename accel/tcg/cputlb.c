@@ -1994,6 +1994,18 @@ static MemoryRegion *io_subpage_leaf(CPUTLBEntryFull *full, MemoryRegion *mr,
     return full->leaf_mr;
 }
 
+/* For the fast paths: a region that is not a subpage is its own leaf. */
+static void io_cache_region_leaf(CPUTLBEntryFull *full, MemoryRegion *mr)
+{
+    if (!mr->subpage && !full->leaf_mr) {
+        full->leaf_mr = mr;
+        full->leaf_lo = 0;
+        full->leaf_hi = memory_region_size(mr);
+        full->leaf_delta = 0;
+        full->leaf_max = mr->ops->valid.max_access_size ?: 4;
+    }
+}
+
 static uint64_t int_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
                                 uint64_t ret_be, vaddr addr, int size,
                                 int mmu_idx, MMUAccessType type, uintptr_t ra,
@@ -2069,13 +2081,8 @@ static uint64_t do_ld_mmio_beN(CPUState *cpu, CPUTLBEntryFull *full,
 
         if (mr->subpage) {
             leaf = io_subpage_leaf(full, mr, &leaf_offset, size);
-        } else if (!full->leaf_mr) {
-            /* For ld4_mmio_fast: the whole region, at its own offsets. */
-            full->leaf_mr = mr;
-            full->leaf_lo = 0;
-            full->leaf_hi = memory_region_size(mr);
-            full->leaf_delta = 0;
-            full->leaf_max = mr->ops->valid.max_access_size ?: 4;
+        } else {
+            io_cache_region_leaf(full, mr);
         }
         if (leaf && memory_region_try_read_lockless(leaf, leaf_offset, size,
                                                     MO_BE | ctz32(size), attrs,
@@ -2638,6 +2645,7 @@ static uint64_t do_st_mmio_leN(CPUState *cpu, CPUTLBEntryFull *full,
     attrs = full->attrs;
     section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
     mr = section->mr;
+    io_cache_region_leaf(full, mr);
 
     BQL_LOCK_GUARD();
     return int_st_mmio_leN(cpu, full, val_le, addr, size, mmu_idx,
@@ -2985,40 +2993,95 @@ static void do_st16_mmu(CPUState *cpu, vaddr addr, Int128 val,
  * region was resolved by an earlier access through this entry, read it
  * directly. Returns false to take the generic path.
  */
-static bool ld4_mmio_fast(CPUState *cpu, vaddr addr, MemOpIdx oi,
-                          uintptr_t ra, uint32_t *val)
+static CPUTLBEntryFull *mmio4_fast_entry(CPUState *cpu, vaddr addr,
+                                         MemOp memop, int mmu_idx,
+                                         MMUAccessType type,
+                                         hwaddr *leaf_offset)
 {
-    MemOp memop = get_memop(oi);
-    int mmu_idx = get_mmuidx(oi);
     CPUTLBEntryFull *full;
-    uint64_t tlb_addr, v;
+    uint64_t tlb_addr;
     hwaddr off;
 
     if ((addr & 3) || memop_alignment_bits(memop) > 2 || !cpu->neg.can_do_io) {
-        return false;
+        return NULL;
     }
-    tlb_addr = tlb_read_idx(tlb_entry(cpu, mmu_idx, addr), MMU_DATA_LOAD);
+    tlb_addr = tlb_read_idx(tlb_entry(cpu, mmu_idx, addr), type);
     if (!tlb_hit(tlb_addr, addr) ||
         (tlb_addr & TLB_FLAGS_MASK) != TLB_MMIO) {
-        return false;
+        return NULL;
     }
     full = &cpu->neg.tlb.d[mmu_idx].fulltlb[tlb_index(cpu, mmu_idx, addr)];
     if (!full->leaf_mr) {
-        return false;
+        return NULL;
     }
     off = (full->xlat_section & TARGET_PAGE_MASK) + addr;
     if (off < full->leaf_lo || off + 4 > full->leaf_hi ||
         full->leaf_max < 4 || ((off + full->leaf_delta) & 3)) {
+        return NULL;
+    }
+    *leaf_offset = off + full->leaf_delta;
+    return full;
+}
+
+static bool ld4_mmio_fast(CPUState *cpu, vaddr addr, MemOpIdx oi,
+                          uintptr_t ra, uint32_t *val)
+{
+    MemOp memop = get_memop(oi);
+    CPUTLBEntryFull *full;
+    hwaddr off;
+    uint64_t v;
+
+    full = mmio4_fast_entry(cpu, addr, memop, get_mmuidx(oi),
+                            MMU_DATA_LOAD, &off);
+    if (!full) {
         return false;
     }
     cpu_req_mo(TCG_MO_LD_LD | TCG_MO_ST_LD);
     cpu->mem_io_pc = ra;
-    if (!memory_region_try_read_lockless(full->leaf_mr, off + full->leaf_delta,
-                                         4, (memop & MO_BSWAP) | MO_32,
+    if (!memory_region_try_read_lockless(full->leaf_mr, off, 4,
+                                         (memop & MO_BSWAP) | MO_32,
                                          full->attrs, &v)) {
         return false;
     }
     *val = v;
+    return true;
+}
+
+/*
+ * The store counterpart: the device write still runs under the BQL, but
+ * without mmu_lookup, the section lookup and the subpage walk, as in
+ * int_st_mmio_leN for a single aligned piece.
+ */
+static bool st4_mmio_fast(CPUState *cpu, vaddr addr, uint32_t val,
+                          MemOpIdx oi, uintptr_t ra)
+{
+    MemOp memop = get_memop(oi);
+    int mmu_idx = get_mmuidx(oi);
+    CPUTLBEntryFull *full;
+    MemoryRegion *leaf;
+    MemTxResult r;
+    hwaddr off;
+
+    full = mmio4_fast_entry(cpu, addr, memop, mmu_idx, MMU_DATA_STORE, &off);
+    if (!full) {
+        return false;
+    }
+    leaf = full->leaf_mr;
+    if (leaf->ops->valid.accepts || leaf->flush_coalesced_mmio) {
+        return false;
+    }
+    if ((memop & MO_BSWAP) != MO_LE) {
+        val = bswap32(val);
+    }
+    cpu_req_mo(TCG_MO_LD_ST | TCG_MO_ST_ST);
+    cpu->mem_io_pc = ra;
+
+    BQL_LOCK_GUARD();
+    r = memory_region_dispatch_write(leaf, off, val, MO_32 | MO_LE,
+                                     full->attrs);
+    if (unlikely(r != MEMTX_OK)) {
+        io_failed(cpu, full, addr, 4, MMU_DATA_STORE, mmu_idx, r, ra);
+    }
     return true;
 }
 

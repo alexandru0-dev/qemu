@@ -106,6 +106,11 @@ void helper_stl_mmu(CPUArchState *env, uint64_t addr, uint32_t val,
                     MemOpIdx oi, uintptr_t retaddr)
 {
     tcg_debug_assert((get_memop(oi) & MO_SIZE) == MO_32);
+#ifndef CONFIG_USER_ONLY
+    if (st4_mmio_fast(env_cpu(env), addr, val, oi, retaddr)) {
+        return;
+    }
+#endif
     do_st4_mmu(env_cpu(env), addr, val, oi, retaddr);
 }
 
