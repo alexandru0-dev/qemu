@@ -17,6 +17,7 @@
 #include "exec/cpu_ldst.h"
 #include "tcg/tcg-op-common.h"
 #include "internal-target.h"
+#include "internal-common.h"
 #include "disas/disas.h"
 
 static void set_can_do_io(DisasContextBase *db, bool val)
@@ -129,6 +130,10 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
     db->is_jmp = DISAS_NEXT;
     db->num_insns = 0;
     db->max_insns = *max_insns;
+    if (tb_io_insn_is_known(pc)) {
+        /* A known device access runs alone: it is the last insn of its TB. */
+        db->max_insns = 1;
+    }
     db->insn_start = NULL;
     db->fake_insn = false;
     db->host_addr[0] = host_pc;
@@ -188,7 +193,8 @@ void translator_loop(CPUState *cpu, TranslationBlock *tb, int *max_insns,
 
         /* Stop translation if the output buffer is full,
            or we have executed all of the allowed instructions.  */
-        if (tcg_op_buf_full() || db->num_insns >= db->max_insns) {
+        if (tcg_op_buf_full() || db->num_insns >= db->max_insns ||
+            tb_io_insn_is_known(db->pc_next)) {
             db->is_jmp = DISAS_TOO_MANY;
             break;
         }

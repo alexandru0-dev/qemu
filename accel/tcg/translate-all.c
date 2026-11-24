@@ -18,6 +18,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/xxhash.h"
 
 #include "trace.h"
 #include "disas/disas.h"
@@ -599,6 +600,79 @@ void tb_check_watchpoint(CPUState *cpu, uintptr_t retaddr)
  *
  * Called by softmmu_template.h, with iothread mutex not held.
  */
+/*
+ * Guest PCs that have performed a device access in the middle of a TB.  Device
+ * accesses may only happen in the last insn of a TB, so without this each such
+ * access unwinds the TB through cpu_io_recompile.  Translation ends a TB before
+ * a known PC instead and gives that insn a TB of its own.  The same insns run
+ * with the same instruction counts and the same interrupt check points, so the
+ * table only affects speed: a stale or aliased entry merely splits a TB.
+ */
+#define IO_INSN_TABLE_SIZE (1u << 12)
+#define IO_INSN_TABLE_MAX  (IO_INSN_TABLE_SIZE / 2)
+
+/* Holds pc + 1, so that zero marks a free entry. */
+static vaddr io_insn_table[IO_INSN_TABLE_SIZE];
+static unsigned io_insn_table_used;
+
+/*
+ * Multiplicative Fibonacci hash using xxHash32 PRIME32_1 (0x9e3779b1,
+ * derived from floor(2^32 / phi)):
+ * https://xxhash.com/doc/v0.8.2/group___x_x_h32__impl.html
+ */
+static vaddr *io_insn_slot(vaddr pc)
+{
+    uint32_t i = (uint32_t)pc * PRIME32_1 >> 20;
+
+    for (;; i++) {
+        vaddr *slot = &io_insn_table[i & (IO_INSN_TABLE_SIZE - 1)];
+        vaddr entry = qatomic_read(slot);
+
+        if (entry == 0 || entry == pc + 1) {
+            return slot;
+        }
+    }
+}
+
+bool tb_io_insn_is_known(vaddr pc)
+{
+    if (pc == (vaddr)-1) {
+        return false;
+    }
+    return qatomic_read(io_insn_slot(pc)) != 0;
+}
+
+/* Returns true if @pc is in the table, adding it when there is room. */
+static bool tb_io_insn_learn(vaddr pc)
+{
+    vaddr key = pc + 1;
+    uint32_t i = (uint32_t)pc * PRIME32_1 >> 20;
+
+    if (key == 0) {
+        return false;
+    }
+    for (;; i++) {
+        vaddr *slot = &io_insn_table[i & (IO_INSN_TABLE_SIZE - 1)];
+        vaddr entry = qatomic_read(slot);
+
+        if (entry == key) {
+            return true;
+        }
+        if (entry == 0) {
+            if (qatomic_read(&io_insn_table_used) >= IO_INSN_TABLE_MAX) {
+                return false;
+            }
+            if (qatomic_cmpxchg(slot, 0, key) == 0) {
+                qatomic_fetch_inc(&io_insn_table_used);
+                return true;
+            }
+            if (qatomic_read(slot) == key) {
+                return true;
+            }
+        }
+    }
+}
+
 void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
 {
     TranslationBlock *tb;
@@ -632,6 +706,15 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
      * double instrument the instruction.
      */
     cpu->cflags_next_tb = curr_cflags(cpu) | CF_MEMI_ONLY | n;
+
+    /*
+     * Replace this TB so that later runs need no unwinding.  Branch-replay
+     * targets (n == 2) keep the old behaviour: the branch and its delay slot
+     * have to stay together.
+     */
+    if (n == 1 && tb->icount > 1 && tb_io_insn_learn(cpu->cc->get_pc(cpu))) {
+        tb_phys_invalidate(tb, -1);
+    }
 
     if (qemu_loglevel_mask(CPU_LOG_EXEC)) {
         vaddr pc = cpu->cc->get_pc(cpu);

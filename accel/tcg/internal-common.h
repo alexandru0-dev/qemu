@@ -54,6 +54,8 @@ void cpu_restore_state_from_tb(CPUState *cpu, TranslationBlock *tb,
                                uintptr_t host_pc);
 
 bool tcg_exec_realizefn(CPUState *cpu, Error **errp);
+
+bool tb_io_insn_is_known(vaddr pc);
 void tcg_exec_unrealizefn(CPUState *cpu);
 
 #endif
