@@ -826,7 +826,12 @@ const char *parse_cpu_option(const char *cpu_option);
  */
 static inline bool cpu_has_work(CPUState *cpu)
 {
-    CPUClass *cc = CPU_GET_CLASS(cpu);
+    /*
+     * The class cached at instance init: CPU_GET_CLASS on a class with
+     * interfaces searches the type table by name even without cast debugging,
+     * and the round-robin vCPU loop asks this on every pass.
+     */
+    CPUClass *cc = cpu->cc;
 
     g_assert(cc->has_work);
     return cc->has_work(cpu);
