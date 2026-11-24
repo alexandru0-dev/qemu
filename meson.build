@@ -689,32 +689,34 @@ endif
 
 # Check further flags that make QEMU more robust against malicious parties
 
-hardening_flags = [
-    # Initialize all stack variables to zero. This makes
-    # it harder to take advantage of uninitialized stack
-    # data to drive exploits
-    '-ftrivial-auto-var-init=zero',
-    # Ensure GCC zero-initializes padding bits and trailing fields in
-    # unions. This avoids potentially leaking host data into the guest
-    # when we init a struct and copy it into guest memory.  GCC prior
-    # to GCC 15 and clang don't have this, but they zero the padding
-    # and trailing portions of a union by default.
-    '-fzero-init-padding-bits=all',
-]
+if get_option('hardening')
+  hardening_flags = [
+      # Initialize all stack variables to zero. This makes
+      # it harder to take advantage of uninitialized stack
+      # data to drive exploits
+      '-ftrivial-auto-var-init=zero',
+      # Ensure GCC zero-initializes padding bits and trailing fields in
+      # unions. This avoids potentially leaking host data into the guest
+      # when we init a struct and copy it into guest memory.  GCC prior
+      # to GCC 15 and clang don't have this, but they zero the padding
+      # and trailing portions of a union by default.
+      '-fzero-init-padding-bits=all',
+  ]
 
-# Zero out registers used during a function call
-# upon its return. This makes it harder to assemble
-# ROP gadgets into something usable
-#
-# NB: Clang 17 is broken and SEGVs
-# https://github.com/llvm/llvm-project/issues/75168
-if cc.compiles('extern struct { void (*cb)(void); } s; void f(void) { s.cb(); }',
-               name: '-fzero-call-used-regs=used-gpr',
-               args: ['-O2', '-fzero-call-used-regs=used-gpr'])
-    hardening_flags += '-fzero-call-used-regs=used-gpr'
+  # Zero out registers used during a function call
+  # upon its return. This makes it harder to assemble
+  # ROP gadgets into something usable
+  #
+  # NB: Clang 17 is broken and SEGVs
+  # https://github.com/llvm/llvm-project/issues/75168
+  if cc.compiles('extern struct { void (*cb)(void); } s; void f(void) { s.cb(); }',
+                 name: '-fzero-call-used-regs=used-gpr',
+                 args: ['-O2', '-fzero-call-used-regs=used-gpr'])
+      hardening_flags += '-fzero-call-used-regs=used-gpr'
+  endif
+
+  qemu_common_flags += hardening_flags
 endif
-
-qemu_common_flags += hardening_flags
 
 # Collect warning flags we want to set, sorted alphabetically
 warn_flags = [
