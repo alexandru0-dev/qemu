@@ -84,6 +84,17 @@ void icount_handle_deadline(void)
      * Don't interrupt cpu thread, when these events are waiting
      * (i.e., there is no checkpoint)
      */
+    if (deadline == 0 && replay_mode == REPLAY_MODE_NONE) {
+        /*
+         * Run the main loop's expired QEMU_CLOCK_VIRTUAL timers here, with the
+         * BQL held as the main loop would, instead of waking the main loop and
+         * waiting for it. Timers of other AioContexts still go through the
+         * notification below.
+         */
+        qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+        deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                              QEMU_TIMER_ATTR_ALL);
+    }
     if (deadline == 0) {
         icount_notify_aio_contexts();
     }
