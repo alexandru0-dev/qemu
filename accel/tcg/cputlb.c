@@ -1548,6 +1548,15 @@ tb_page_addr_t get_page_addr_code_hostp(CPUArchState *env, vaddr addr,
     if (hostp) {
         *hostp = p;
     }
+    /*
+     * For RAM, tlb_set_page_full stored the page-aligned ram_addr_t minus the
+     * page's vaddr in xlat_section, as notdirty_write uses it; other regions
+     * keep a section number in the low bits. Translating from that skips the
+     * search of the RAM block list on every TB hash-table lookup.
+     */
+    if (!(full->xlat_section & ~TARGET_PAGE_MASK)) {
+        return addr + full->xlat_section;
+    }
     return qemu_ram_addr_from_host_nofail(p);
 }
 
