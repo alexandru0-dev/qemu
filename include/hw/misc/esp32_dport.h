@@ -35,7 +35,18 @@ typedef struct Esp32CacheRegionState {
     bool illegal_access_trap_en;
     bool illegal_access_status;
     uint16_t mmu_table[ESP32_CACHE_PAGES_PER_REGION];
+    /*
+     * MMU entry whose data each cache page holds, or
+     * ESP32_CACHE_PAGE_UNLOADED
+     */
+    uint16_t loaded_entry[ESP32_CACHE_PAGES_PER_REGION];
+    /* Flash write generation and decryption state at the last data sync */
+    bool synced;
+    bool synced_decrypt;
+    unsigned int synced_write_gen;
 } Esp32CacheRegionState;
+
+#define ESP32_CACHE_PAGE_UNLOADED       0xffff
 
 typedef struct Esp32CacheState {
     Esp32DportState* dport;

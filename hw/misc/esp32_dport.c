@@ -20,6 +20,8 @@
 #include "hw/boards.h"
 #include "hw/misc/esp32_reg.h"
 #include "hw/misc/esp32_dport.h"
+#include "block/block_int.h"
+#include "qemu/atomic.h"
 
 #include "hw/misc/esp32_flash_enc.h"
 #include "hw/nvram/esp32_efuse.h"
@@ -244,29 +246,69 @@ static void esp32_cache_data_sync(Esp32CacheRegionState* crs)
     Esp32FlashEncryptionState * flash_enc = esp32_flash_encryption_find();
     bool decrypt = (flash_enc != NULL && esp32_flash_decryption_enabled(flash_enc));
 
-    uint8_t* cache_data = (uint8_t*) memory_region_get_ram_ptr(&crs->mem);
+    /*
+     * The guest disables and flushes the cache around every flash operation,
+     * which marks every page changed. Reloading them all and dropping all
+     * translated code each time is the dominant cost of flash access. The
+     * block layer counts completed writes in write_gen, so with the same
+     * generation and decryption state as the last sync, a page still holding
+     * the same MMU entry already holds the bytes a reload would produce. A
+     * write still in flight now bumps the generation when it completes, so
+     * the next sync rechecks. Pages that are reloaded only drop translated
+     * code when their bytes actually changed.
+     */
+    BlockDriverState *bs = blk_bs(crs->cache->dport->flash_blk);
+    unsigned int write_gen = bs ? qatomic_read(&bs->write_gen) : 0;
+    bool flash_unchanged = bs && crs->synced &&
+                           write_gen == crs->synced_write_gen &&
+                           decrypt == crs->synced_decrypt;
+
+    uint8_t *cache_data = (uint8_t *)memory_region_get_ram_ptr(&crs->mem);
+    uint32_t *page_buf = NULL;
     for (int i = 0; i < ESP32_CACHE_PAGES_PER_REGION; ++i) {
-        uint32_t* cache_page = (uint32_t*) (cache_data + i * ESP32_CACHE_PAGE_SIZE);
+        uint32_t *cache_page =
+            (uint32_t *)(cache_data + i * ESP32_CACHE_PAGE_SIZE);
         uint32_t mmu_entry = crs->mmu_table[i];
         if (!(mmu_entry & ESP32_CACHE_MMU_ENTRY_CHANGED)) {
             continue;
         }
         mmu_entry &= MMU_ENTRY_MASK;
-        if (mmu_entry & ESP32_CACHE_MMU_INVALID_VAL) {
+        crs->mmu_table[i] &= ~ESP32_CACHE_MMU_ENTRY_CHANGED;
+        bool invalid = (mmu_entry & ESP32_CACHE_MMU_INVALID_VAL) != 0;
+        if (crs->loaded_entry[i] == mmu_entry &&
+            (invalid || flash_unchanged)) {
+            continue;
+        }
+        if (page_buf == NULL) {
+            page_buf = g_malloc(ESP32_CACHE_PAGE_SIZE);
+        }
+        if (invalid) {
             uint32_t fill_val = crs->illegal_access_retval;
-            for (int word = 0; word < ESP32_CACHE_PAGE_SIZE / sizeof(uint32_t); ++word) {
-                cache_page[word] = fill_val;
+            for (int word = 0;
+                 word < ESP32_CACHE_PAGE_SIZE / sizeof(uint32_t); ++word) {
+                page_buf[word] = fill_val;
             }
         } else {
             uint32_t phys_addr = mmu_entry * ESP32_CACHE_PAGE_SIZE;
-            blk_pread(crs->cache->dport->flash_blk, phys_addr, ESP32_CACHE_PAGE_SIZE, cache_page, 0);
+            blk_pread(crs->cache->dport->flash_blk, phys_addr,
+                      ESP32_CACHE_PAGE_SIZE, page_buf, 0);
             if (decrypt) {
-                esp32_flash_decrypt_inplace(flash_enc, phys_addr, cache_page, ESP32_CACHE_PAGE_SIZE/4);
+                esp32_flash_decrypt_inplace(flash_enc, phys_addr, page_buf,
+                                            ESP32_CACHE_PAGE_SIZE / 4);
             }
         }
-        crs->mmu_table[i] &= ~ESP32_CACHE_MMU_ENTRY_CHANGED;
+        if (crs->loaded_entry[i] == ESP32_CACHE_PAGE_UNLOADED ||
+            memcmp(cache_page, page_buf, ESP32_CACHE_PAGE_SIZE) != 0) {
+            memcpy(cache_page, page_buf, ESP32_CACHE_PAGE_SIZE);
+            memory_region_flush_rom_device(&crs->mem, i * ESP32_CACHE_PAGE_SIZE,
+                                           ESP32_CACHE_PAGE_SIZE);
+        }
+        crs->loaded_entry[i] = mmu_entry;
     }
-    memory_region_flush_rom_device(&crs->mem, 0, ESP32_CACHE_REGION_SIZE);
+    g_free(page_buf);
+    crs->synced = bs != NULL;
+    crs->synced_write_gen = write_gen;
+    crs->synced_decrypt = decrypt;
 }
 
 static void esp32_cache_invalidate_all_entries(Esp32CacheRegionState* crs)
@@ -305,7 +347,9 @@ static void esp32_cache_region_reset(Esp32CacheRegionState *crs)
 {
     for (int i = 0; i < ESP32_CACHE_PAGES_PER_REGION; ++i) {
         crs->mmu_table[i] = ESP32_CACHE_MMU_ENTRY_CHANGED;
+        crs->loaded_entry[i] = ESP32_CACHE_PAGE_UNLOADED;
     }
+    crs->synced = false;
     crs->illegal_access_trap_en = false;
 }
 
