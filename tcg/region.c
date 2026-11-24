@@ -551,12 +551,24 @@ static int alloc_code_gen_buffer(size_t size, int splitwx, Error **errp)
     return PROT_READ | PROT_WRITE | PROT_EXEC;
 }
 #else
+static void *code_gen_buffer_mmap_hint(void)
+{
+#ifdef TCG_TARGET_CODE_GEN_BUFFER_HINT_OFFSET
+    uintptr_t base = (uintptr_t)code_gen_buffer_mmap_hint;
+
+    return (void *)QEMU_ALIGN_UP(base + TCG_TARGET_CODE_GEN_BUFFER_HINT_OFFSET,
+                                 qemu_real_host_page_size());
+#else
+    return NULL;
+#endif
+}
+
 static int alloc_code_gen_buffer_anon(size_t size, int prot,
                                       int flags, Error **errp)
 {
     void *buf;
 
-    buf = mmap(NULL, size, prot, flags, -1, 0);
+    buf = mmap(code_gen_buffer_mmap_hint(), size, prot, flags, -1, 0);
     if (buf == MAP_FAILED) {
         error_setg_errno(errp, errno,
                          "allocate %zu bytes for jit buffer", size);
@@ -582,7 +594,8 @@ static int alloc_code_gen_buffer_splitwx_memfd(size_t size, Error **errp)
         goto fail;
     }
 
-    buf_rx = mmap(NULL, size, host_prot_read_exec(), MAP_SHARED, fd, 0);
+    buf_rx = mmap(code_gen_buffer_mmap_hint(), size, host_prot_read_exec(),
+                  MAP_SHARED, fd, 0);
     if (buf_rx == MAP_FAILED) {
         error_setg_errno(errp, errno,
                          "failed to map shared memory for execute");

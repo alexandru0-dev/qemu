@@ -33,6 +33,15 @@ extern int arm_arch;
 #define TCG_TARGET_INSN_UNIT_SIZE 4
 #define MAX_CODE_GEN_BUFFER_SIZE  UINT32_MAX
 
+/*
+ * On 32-bit Arm a direct BL/BLX reaches +-32 MiB, whereas an unhinted
+ * mmap() typically places the JIT buffer far from the executable and
+ * forces every helper call through MOVW/MOVT/BLX reg. Hint mmap() above
+ * .text so helper calls from the JIT buffer can use direct BL/BLX while
+ * keeping dynamic tb-size and split-wx support intact.
+ */
+#define TCG_TARGET_CODE_GEN_BUFFER_HINT_OFFSET (12 * MiB)
+
 typedef enum {
     TCG_REG_R0 = 0,
     TCG_REG_R1,
