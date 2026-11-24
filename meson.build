@@ -657,30 +657,32 @@ endif
 
 # Check further flags that make QEMU more robust against malicious parties
 
-hardening_flags = [
-    # Initialize all stack variables to zero. This makes
-    # it harder to take advantage of uninitialized stack
-    # data to drive exploits
-    '-ftrivial-auto-var-init=zero',
-]
+if get_option('hardening')
+  hardening_flags = [
+      # Initialize all stack variables to zero. This makes
+      # it harder to take advantage of uninitialized stack
+      # data to drive exploits
+      '-ftrivial-auto-var-init=zero',
+  ]
 
-# Zero out registers used during a function call
-# upon its return. This makes it harder to assemble
-# ROP gadgets into something usable
-#
-# NB: Clang 17 is broken and SEGVs
-# https://github.com/llvm/llvm-project/issues/75168
-#
-# NB2: This clashes with the "retguard" extension of OpenBSD's Clang
-# https://gitlab.com/qemu-project/qemu/-/issues/2278
-if host_os != 'openbsd' and \
-   cc.compiles('extern struct { void (*cb)(void); } s; void f(void) { s.cb(); }',
-               name: '-fzero-call-used-regs=used-gpr',
-               args: ['-O2', '-fzero-call-used-regs=used-gpr'])
-    hardening_flags += '-fzero-call-used-regs=used-gpr'
+  # Zero out registers used during a function call
+  # upon its return. This makes it harder to assemble
+  # ROP gadgets into something usable
+  #
+  # NB: Clang 17 is broken and SEGVs
+  # https://github.com/llvm/llvm-project/issues/75168
+  #
+  # NB2: This clashes with the "retguard" extension of OpenBSD's Clang
+  # https://gitlab.com/qemu-project/qemu/-/issues/2278
+  if host_os != 'openbsd' and \
+     cc.compiles('extern struct { void (*cb)(void); } s; void f(void) { s.cb(); }',
+                 name: '-fzero-call-used-regs=used-gpr',
+                 args: ['-O2', '-fzero-call-used-regs=used-gpr'])
+      hardening_flags += '-fzero-call-used-regs=used-gpr'
+  endif
+
+  qemu_common_flags += cc.get_supported_arguments(hardening_flags)
 endif
-
-qemu_common_flags += cc.get_supported_arguments(hardening_flags)
 
 add_global_arguments(qemu_common_flags, native: false, language: all_languages)
 add_global_link_arguments(qemu_ldflags, native: false, language: all_languages)

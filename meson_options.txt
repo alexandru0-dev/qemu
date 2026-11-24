@@ -99,6 +99,8 @@ option('ubsan', type: 'boolean', value: false,
        description: 'enable undefined behaviour sanitizer')
 option('tsan', type: 'boolean', value: false,
        description: 'enable thread sanitizer')
+option('hardening', type: 'boolean', value: true,
+       description: 'compiler stack and register zeroing hardening')
 option('stack_protector', type: 'feature', value: 'auto',
        description: 'compiler-provided stack protection')
 option('cfi', type: 'boolean', value: false,
