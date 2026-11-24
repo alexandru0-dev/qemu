@@ -37,7 +37,8 @@ typedef struct Esp32TimgTimerState {
     uint64_t alarm_val;
     uint64_t load_val;
     uint64_t count_base;
-    uint64_t last_val;
+    uint32_t last_val_lo;
+    uint32_t last_val_hi;
     uint64_t ns_base;
     Esp32TimgInterruptType int_type;
     QEMUTimer alarm_timer;

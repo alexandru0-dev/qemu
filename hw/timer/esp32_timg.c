@@ -81,12 +81,12 @@ static uint64_t esp32_timg_read(void *opaque, hwaddr addr, unsigned int size)
     case A_TIMG_T0LO:
     case A_TIMG_T1LO:
     case A_TIMG_LACTLO:
-        r = ts->last_val & UINT32_MAX;
+        r = ts->last_val_lo;
         break;
     case A_TIMG_T0HI:
     case A_TIMG_T1HI:
     case A_TIMG_LACTHI:
-        r = ts->last_val >> 32;
+        r = ts->last_val_hi;
         break;
     case A_TIMG_T0LOADLO:
     case A_TIMG_T1LOADLO:
@@ -167,14 +167,17 @@ static void esp32_timg_write(void *opaque, hwaddr addr,
     case A_TIMG_T0CONFIG:
     case A_TIMG_T1CONFIG:
     case A_TIMG_LACTCONFIG:
-        ts->config_reg = value;
+        qatomic_set(&ts->config_reg, value);
         esp32_timg_timer_update_config(ts);
         break;
     case A_TIMG_T0UPDATE:
     case A_TIMG_T1UPDATE:
     case A_TIMG_LACTUPDATE: {
         uint64_t ns_now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-        ts->last_val = esp32_timg_timer_get_count(ts, ns_now);
+        uint64_t val = esp32_timg_timer_get_count(ts, ns_now);
+
+        qatomic_set(&ts->last_val_lo, (uint32_t)val);
+        qatomic_set(&ts->last_val_hi, (uint32_t)(val >> 32));
         break;
     }
     case A_TIMG_T0LOADLO:
@@ -258,18 +261,73 @@ static void esp32_timg_write(void *opaque, hwaddr addr,
     }
 }
 
+/*
+ * Hot timer configuration and latched counter reads only load 32-bit values
+ * updated under the BQL via qatomic_set(): counters are latched by the UPDATE
+ * write. Other registers fall back to esp32_timg_read() under the BQL.
+ */
+static bool esp32_timg_read_lockless(void *opaque, hwaddr addr, unsigned size,
+                                     uint64_t *data)
+{
+    Esp32TimgState *s = ESP32_TIMG(opaque);
+    Esp32TimgTimerState *ts;
+
+    switch (addr) {
+    case A_TIMG_T0CONFIG:
+    case A_TIMG_T0LO:
+    case A_TIMG_T0HI:
+        ts = &s->t0;
+        break;
+    case A_TIMG_T1CONFIG:
+    case A_TIMG_T1LO:
+    case A_TIMG_T1HI:
+        ts = &s->t1;
+        break;
+    case A_TIMG_LACTCONFIG:
+    case A_TIMG_LACTLO:
+    case A_TIMG_LACTHI:
+        ts = &s->lact;
+        break;
+    default:
+        return false;
+    }
+
+    switch (addr) {
+    case A_TIMG_T0CONFIG:
+    case A_TIMG_T1CONFIG:
+    case A_TIMG_LACTCONFIG:
+        *data = qatomic_read(&ts->config_reg);
+        return true;
+    case A_TIMG_T0LO:
+    case A_TIMG_T1LO:
+    case A_TIMG_LACTLO:
+        *data = qatomic_read(&ts->last_val_lo);
+        return true;
+    case A_TIMG_T0HI:
+    case A_TIMG_T1HI:
+    case A_TIMG_LACTHI:
+        *data = qatomic_read(&ts->last_val_hi);
+        return true;
+    default:
+        g_assert_not_reached();
+    }
+}
+
 static const MemoryRegionOps esp32_timg_ops = {
     .read =  esp32_timg_read,
     .write = esp32_timg_write,
+    .read_lockless = esp32_timg_read_lockless,
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static void esp32_timg_timer_reset(Esp32TimgTimerState* ts)
 {
     timer_del(&ts->alarm_timer);
-    ts->config_reg = R_TIMG_T0CONFIG_INCREASE_MASK
+    qatomic_set(&ts->config_reg, R_TIMG_T0CONFIG_INCREASE_MASK
         | R_TIMG_T0CONFIG_AUTORELOAD_MASK
-        | (1 << R_TIMG_T0CONFIG_DIVIDER_SHIFT);
+        | (1 << R_TIMG_T0CONFIG_DIVIDER_SHIFT));
+    qatomic_set(&ts->last_val_lo, 0);
+    qatomic_set(&ts->last_val_hi, 0);
     ts->alarm_val = 0;
     ts->load_val = 0;
     ts->count_base = 0;
