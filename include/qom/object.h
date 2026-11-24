@@ -16,6 +16,7 @@
 
 #include "qapi/qapi-builtin-types.h"
 #include "qemu/module.h"
+#include "trace/control.h"
 
 struct TypeImpl;
 typedef struct TypeImpl *Type;
@@ -525,9 +526,16 @@ struct TypeInfo
  * If an invalid object is passed to this function, a run time assert will be
  * generated.
  */
+#if defined(CONFIG_QOM_CAST_DEBUG) || defined(CONFIG_TRACE_DTRACE) || \
+    defined(CONFIG_TRACE_UST)
 #define OBJECT_CHECK(type, obj, name) \
     ((type *)object_dynamic_cast_assert(OBJECT(obj), (name), \
                                         __FILE__, __LINE__, __func__))
+#else
+#define OBJECT_CHECK(type, obj, name) \
+    ((type *)object_check_fast(OBJECT(obj), (name), \
+                               __FILE__, __LINE__, __func__))
+#endif
 
 /**
  * OBJECT_CLASS_CHECK:
@@ -859,6 +867,24 @@ Object *object_dynamic_cast(Object *obj, const char *typename);
  */
 Object *object_dynamic_cast_assert(Object *obj, const char *typename,
                                    const char *file, int line, const char *func);
+
+#if !defined(CONFIG_QOM_CAST_DEBUG) && !defined(CONFIG_TRACE_DTRACE) && \
+    !defined(CONFIG_TRACE_UST)
+/*
+ * Without cast debugging, object_dynamic_cast_assert() only emits its
+ * tracepoint and returns obj. Avoid the out-of-line call on hot device
+ * paths while no trace events are enabled.
+ */
+static inline Object *object_check_fast(Object *obj, const char *name,
+                                        const char *file, int line,
+                                        const char *func)
+{
+    if (unlikely(trace_events_enabled_count)) {
+        return object_dynamic_cast_assert(obj, name, file, line, func);
+    }
+    return obj;
+}
+#endif
 
 /**
  * object_get_class:
