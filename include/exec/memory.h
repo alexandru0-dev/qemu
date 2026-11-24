@@ -3033,6 +3033,18 @@ bool memory_region_try_read_lockless(MemoryRegion *mr, hwaddr addr,
                                      unsigned size, MemOp op,
                                      MemTxAttrs attrs, uint64_t *pval);
 
+/*
+ * Write @data, in @op's byte order, as one @size-byte access at @addr of @mr,
+ * a region that is not a subpage, by calling its write callback directly.
+ * Only for an access that memory_region_dispatch_write would hand to the
+ * callback whole, with nothing else to do (no alias, eventfd, coalesced MMIO,
+ * accepts callback, write_with_attrs or enabled write trace). Returns false,
+ * having done nothing, when the access needs memory_region_dispatch_write.
+ * Caller holds the BQL unless the region does its own locking.
+ */
+bool memory_region_try_write_direct(MemoryRegion *mr, hwaddr addr,
+                                    unsigned size, MemOp op, uint64_t data);
+
 static inline bool memory_access_is_direct(MemoryRegion *mr, bool is_write)
 {
     if (is_write) {

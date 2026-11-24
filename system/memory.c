@@ -1532,6 +1532,43 @@ bool memory_region_try_read_lockless(MemoryRegion *mr, hwaddr addr,
     return true;
 }
 
+bool memory_region_try_write_direct(MemoryRegion *mr, hwaddr addr,
+                                    unsigned size, MemOp op, uint64_t data)
+{
+    unsigned min, max;
+    bool reentrancy_guard_applied = false;
+
+    if (!mr->ops->write || mr->alias || mr->subpage || mr->ioeventfd_nb ||
+        mr->flush_coalesced_mmio || mr->ops->valid.accepts ||
+        (addr & (size - 1)) ||
+        trace_event_get_state_backends(TRACE_MEMORY_REGION_OPS_WRITE)) {
+        return false;
+    }
+    /* As in memory_region_try_read_lockless: whole, valid accesses only. */
+    min = mr->ops->impl.min_access_size ? : 1;
+    max = mr->ops->impl.max_access_size ? : 4;
+    if (size < min || size > max ||
+        (mr->ops->valid.max_access_size &&
+         (size > mr->ops->valid.max_access_size ||
+          size < mr->ops->valid.min_access_size))) {
+        return false;
+    }
+    if (mr->dev && !mr->disable_reentrancy_guard &&
+        !mr->ram_device && !mr->ram && !mr->rom_device && !mr->readonly) {
+        if (mr->dev->mem_reentrancy_guard.engaged_in_io) {
+            return false;
+        }
+        mr->dev->mem_reentrancy_guard.engaged_in_io = true;
+        reentrancy_guard_applied = true;
+    }
+    adjust_endianness(mr, &data, op);
+    mr->ops->write(mr->opaque, addr, data & MAKE_64BIT_MASK(0, size * 8), size);
+    if (reentrancy_guard_applied) {
+        mr->dev->mem_reentrancy_guard.engaged_in_io = false;
+    }
+    return true;
+}
+
 /* Return true if an eventfd was signalled */
 static bool memory_region_dispatch_write_eventfds(MemoryRegion *mr,
                                                     hwaddr addr,

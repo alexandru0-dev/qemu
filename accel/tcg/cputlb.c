@@ -3077,6 +3077,9 @@ static bool st4_mmio_fast(CPUState *cpu, vaddr addr, uint32_t val,
     cpu->mem_io_pc = ra;
 
     BQL_LOCK_GUARD();
+    if (memory_region_try_write_direct(leaf, off, 4, MO_32 | MO_LE, val)) {
+        return true;
+    }
     r = memory_region_dispatch_write(leaf, off, val, MO_32 | MO_LE,
                                      full->attrs);
     if (unlikely(r != MEMTX_OK)) {
