@@ -191,6 +191,25 @@ void HELPER(retw)(CPUXtensaState *env, uint32_t a0)
     xtensa_rotate_window(env, -n);
 }
 
+/*
+ * test_ill_retw, test_underflow_retw and retw of a single-op RETW in one call.
+ */
+void HELPER(retw_checked)(CPUXtensaState *env, uint32_t pc)
+{
+    HELPER(test_ill_retw)(env, pc);
+    HELPER(test_underflow_retw)(env, pc);
+    env->sregs[WINDOW_START] &= ~(1u << env->sregs[WINDOW_BASE]);
+    HELPER(retw)(env, env->regs[0]);
+}
+
+/* entry followed by the window rotation gen_postprocess would emit. */
+void HELPER(entry_rotate)(CPUXtensaState *env, uint32_t pc, uint32_t s,
+                          uint32_t imm)
+{
+    HELPER(entry)(env, pc, s, imm);
+    HELPER(sync_windowbase)(env);
+}
+
 void xtensa_restore_owb(CPUXtensaState *env)
 {
     xtensa_rotate_window_abs(env, (env->sregs[PS] & PS_OWB) >> PS_OWB_SHIFT);

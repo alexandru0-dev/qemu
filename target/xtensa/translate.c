@@ -892,6 +892,7 @@ static void disas_xtensa_insn(CPUXtensaState *env, DisasContext *dc)
         return;
     }
     slots = xtensa_format_num_slots(isa, fmt);
+    dc->single_op = slots == 1;
     for (slot = 0; slot < slots; ++slot) {
         xtensa_opcode opc;
         int opnd, vopnd, opnds;
@@ -1055,7 +1056,10 @@ static void disas_xtensa_insn(CPUXtensaState *env, DisasContext *dc)
         return;
     }
 
-    if (op_flags & XTENSA_OP_UNDERFLOW) {
+    /*
+     * A single-op RETW checks underflow in its own helper; see translate_retw.
+     */
+    if ((op_flags & XTENSA_OP_UNDERFLOW) && !dc->single_op) {
         TCGv_i32 pc = tcg_constant_i32(dc->pc);
 
         gen_helper_test_underflow_retw(tcg_env, pc);
@@ -1578,6 +1582,16 @@ static void translate_entry(DisasContext *dc, const OpcodeArg arg[],
     TCGv_i32 pc = tcg_constant_i32(dc->pc);
     TCGv_i32 s = tcg_constant_i32(arg[0].imm);
     TCGv_i32 imm = tcg_constant_i32(arg[1].imm);
+
+    if (dc->single_op) {
+        /*
+         * No other op of this instruction needs the old window, so rotate in
+         * the same helper instead of in gen_postprocess.
+         */
+        gen_helper_entry_rotate(tcg_env, pc, s, imm);
+        dc->op_flags &= ~XTENSA_OP_SYNC_REGISTER_WINDOW;
+        return;
+    }
     gen_helper_entry(tcg_env, pc, s, imm);
 }
 
@@ -2025,18 +2039,31 @@ static uint32_t test_exceptions_retw(DisasContext *dc, const OpcodeArg arg[],
         qemu_log_mask(LOG_GUEST_ERROR,
                       "Illegal retw instruction(pc = %08x)\n", dc->pc);
         return XTENSA_OP_ILL;
-    } else {
+    } else if (!dc->single_op) {
         TCGv_i32 pc = tcg_constant_i32(dc->pc);
 
         gen_helper_test_ill_retw(tcg_env, pc);
-        return 0;
     }
+    return 0;
 }
 
 static void translate_retw(DisasContext *dc, const OpcodeArg arg[],
                            const uint32_t par[])
 {
     TCGv_i32 tmp = tcg_temp_new();
+
+    if (dc->single_op) {
+        /*
+         * One helper call instead of three: the illegal-instruction and
+         * underflow checks, in that order, then the WINDOW_START update and
+         * the rotation.
+         */
+        tcg_gen_movi_i32(tmp, dc->pc);
+        tcg_gen_deposit_i32(tmp, tmp, cpu_R[0], 0, 30);
+        gen_helper_retw_checked(tcg_env, tcg_constant_i32(dc->pc));
+        gen_jump(dc, tmp);
+        return;
+    }
     tcg_gen_shl_i32(tmp, tcg_constant_i32(1), cpu_SR[WINDOW_BASE]);
     tcg_gen_andc_i32(cpu_SR[WINDOW_START],
                      cpu_SR[WINDOW_START], tmp);

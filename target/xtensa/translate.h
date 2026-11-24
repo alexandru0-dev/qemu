@@ -44,6 +44,8 @@ struct DisasContext {
     unsigned cpenable;
 
     uint32_t op_flags;
+    /* The instruction being translated is not a multi-op FLIX bundle. */
+    bool single_op;
     xtensa_insnbuf_word insnbuf[MAX_INSNBUF_LENGTH];
     xtensa_insnbuf_word slotbuf[MAX_INSNBUF_LENGTH];
 };
