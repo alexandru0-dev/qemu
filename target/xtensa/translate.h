@@ -46,6 +46,8 @@ struct DisasContext {
     uint32_t op_flags;
     /* The instruction being translated is not a multi-op FLIX bundle. */
     bool single_op;
+    /* The instruction being translated contains ENTRY. */
+    bool entry;
     xtensa_insnbuf_word insnbuf[MAX_INSNBUF_LENGTH];
     xtensa_insnbuf_word slotbuf[MAX_INSNBUF_LENGTH];
 };

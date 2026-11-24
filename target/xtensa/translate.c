@@ -406,6 +406,44 @@ static void gen_jumpi_check_loop_end(DisasContext *dc, int slot)
     }
 }
 
+/*
+ * ENTRY changes only the window field of the TB flags.  Instead of always
+ * looking the next TB up, test at run time whether the window field after
+ * ENTRY has the value predicted at translate time and, if so, chain to the
+ * next TB.  The test makes the flags at the chained exit exactly the TB's
+ * own flags with that window field, so the chained target is always the TB
+ * that a lookup would have found; any other value takes the lookup path.
+ */
+static void gen_jump_after_entry(DisasContext *dc)
+{
+    uint32_t dest = dc->base.pc_next;
+    /* ENTRY's overflow check guarantees callinc <= window here. */
+    uint32_t pred = dc->window < 3 ? dc->window - dc->callinc : 3;
+    uint32_t mask = pred < 3 ? (2u << pred) - 1 : 7;
+    uint32_t want = pred < 3 ? 1u << pred : 0;
+    TCGv_i32 ws;
+    TCGv_i32 sh;
+    TCGLabel *miss;
+
+    if (dest == dc->lend || !translator_use_goto_tb(&dc->base, dest)) {
+        gen_jumpi_check_loop_end(dc, -1);
+        return;
+    }
+    ws = tcg_temp_new_i32();
+    sh = tcg_temp_new_i32();
+    miss = gen_new_label();
+    /* The window field is ctz32(windowstart >> (windowbase + 1) | 8). */
+    tcg_gen_shli_i32(ws, cpu_SR[WINDOW_START], dc->config->nareg / 4);
+    tcg_gen_or_i32(ws, ws, cpu_SR[WINDOW_START]);
+    tcg_gen_addi_i32(sh, cpu_SR[WINDOW_BASE], 1);
+    tcg_gen_shr_i32(ws, ws, sh);
+    tcg_gen_andi_i32(ws, ws, mask);
+    tcg_gen_brcondi_i32(TCG_COND_NE, ws, want, miss);
+    gen_jump_slot(dc, tcg_constant_i32(dest), 0);
+    gen_set_label(miss);
+    gen_jump_slot(dc, tcg_constant_i32(dest), -1);
+}
+
 static void gen_brcond(DisasContext *dc, TCGCond cond,
                        TCGv_i32 t0, TCGv_i32 t1, uint32_t addr)
 {
@@ -1114,6 +1152,7 @@ static void disas_xtensa_insn(CPUXtensaState *env, DisasContext *dc)
     }
 
     dc->op_flags = op_flags;
+    dc->entry = false;
 
     for (slot = 0; slot < slots; ++slot) {
         struct slot_prop *pslot = ordered[slot];
@@ -1125,7 +1164,10 @@ static void disas_xtensa_insn(CPUXtensaState *env, DisasContext *dc)
     if (dc->base.is_jmp == DISAS_NEXT) {
         gen_postprocess(dc, 0);
         dc->op_flags = 0;
-        if (op_flags & XTENSA_OP_EXIT_TB_M1) {
+        if (dc->entry && op_flags == (XTENSA_OP_EXIT_TB_M1 |
+                                      XTENSA_OP_SYNC_REGISTER_WINDOW)) {
+            gen_jump_after_entry(dc);
+        } else if (op_flags & XTENSA_OP_EXIT_TB_M1) {
             /* Change in mmu index, memory mapping or tb->flags; exit tb */
             gen_jumpi_check_loop_end(dc, -1);
         } else if (op_flags & XTENSA_OP_EXIT_TB_0) {
@@ -1583,6 +1625,7 @@ static void translate_entry(DisasContext *dc, const OpcodeArg arg[],
     TCGv_i32 s = tcg_constant_i32(arg[0].imm);
     TCGv_i32 imm = tcg_constant_i32(arg[1].imm);
 
+    dc->entry = true;
     if (dc->single_op) {
         /*
          * No other op of this instruction needs the old window, so rotate in
