@@ -7,9 +7,10 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "hw/i2c/i2c.h"
-#include "hw/irq.h"
-#include "hw/resettable.h"
+#include "hw/core/irq.h"
+#include "hw/core/resettable.h"
 #include "migration/vmstate.h"
+#include "qapi/qapi-builtin-type-infos.h"
 #include "qapi/visitor.h"
 #include "qom/object.h"
 
@@ -178,7 +179,12 @@ static void pca9575_reset_hold(Object *obj, ResetType type)
     }
     state->pointer = 0;
     state->expecting_pointer = true;
-    pca9575_update(state);
+}
+
+static void pca9575_reset_exit(Object *obj, ResetType type)
+{
+    /* Drive the output lines only once every device has reset its state. */
+    pca9575_update(PCA9575(obj));
 }
 
 static const VMStateDescription pca9575_vmstate = {
@@ -212,8 +218,9 @@ static void pca9575_init(Object *obj)
         g_autofree char *output = g_strdup_printf("output%d", bank);
         g_autofree char *config = g_strdup_printf("config%d", bank);
 
-        object_property_add(obj, input, "uint8", pca9575_get_input,
-                            pca9575_set_input, NULL, (void *)(uintptr_t)bank);
+        object_property_add(obj, input, "uint8", &uint8_type_info,
+                            pca9575_get_input, pca9575_set_input, NULL,
+                            (void *)(uintptr_t)bank);
         object_property_add_uint8_ptr(obj, output,
                                      &state->regs[PCA9575_OUTPUT + bank],
                                      OBJ_PROP_FLAG_READ);
@@ -223,7 +230,7 @@ static void pca9575_init(Object *obj)
     }
 }
 
-static void pca9575_class_init(ObjectClass *klass, void *data)
+static void pca9575_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *ic = I2C_SLAVE_CLASS(klass);
@@ -233,6 +240,7 @@ static void pca9575_class_init(ObjectClass *klass, void *data)
     ic->recv = pca9575_recv;
     ic->send = pca9575_send;
     rc->phases.hold = pca9575_reset_hold;
+    rc->phases.exit = pca9575_reset_exit;
     dc->vmsd = &pca9575_vmstate;
 }
 
