@@ -431,14 +431,16 @@ static void icount_timer_cb(void *opaque)
  * main-loop pass per guest idle period. The caller runs the timers now due.
  *
  * Returns false, leaving the warp to the main loop, when sleeping is enabled,
- * in record/replay, when the VM is not running, or when no timer is pending.
+ * in record/replay or qtest, when the VM is not running, or when no timer is
+ * pending.
  */
 bool icount_warp_idle_in_vcpu(void)
 {
     int64_t deadline;
 
+    /* As icount_start_warp_timer(): qtest commands advance the clock. */
     if (icount_sleep || replay_mode != REPLAY_MODE_NONE ||
-        !runstate_is_running()) {
+        !runstate_is_running() || qtest_enabled()) {
         return false;
     }
 
