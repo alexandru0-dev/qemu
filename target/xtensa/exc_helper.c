@@ -280,6 +280,7 @@ void xtensa_cpu_do_interrupt(CPUState *cs)
 bool xtensa_cpu_do_exception_lockless(CPUState *cs)
 {
     CPUXtensaState *env = cpu_env(cs);
+    uint64_t last_pc = env->pc;
     uint32_t vector;
 
     switch (cs->exception_index) {
@@ -301,12 +302,14 @@ bool xtensa_cpu_do_exception_lockless(CPUState *cs)
     if (!vector) {
         return false;
     }
-    qemu_log_mask(CPU_LOG_INT, "%s(%d) "
+    qemu_log_mask(CPU_LOG_INT, "%s(%d:%s) "
                   "pc = %08x, a0 = %08x, ps = %08x, ccount = %08x\n",
                   __func__, cs->exception_index,
+                  xtensa_exception_name(cs->exception_index),
                   env->pc, env->regs[0], env->sregs[PS],
                   env->sregs[CCOUNT]);
     env->pc = relocated_vector(env, vector);
+    qemu_plugin_vcpu_exception_cb(cs, last_pc);
     if (!xtensa_interrupts_unchanged(env)) {
         bql_lock();
         check_interrupts(env);
