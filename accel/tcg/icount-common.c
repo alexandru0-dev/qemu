@@ -229,12 +229,13 @@ int64_t icount_round(int64_t count)
 }
 
 /*
- * Idle pacing for fixed-shift icount with sleep=on.
+ * Idle pacing for fixed-shift icount with sleep=on (-icount pace=on).
  *
- * An idle warp only recovers the real time spent sleeping.  Real time spent
- * translating and executing guest code beyond its icount value, and thread
- * wake-up latency around the warp, is otherwise never returned to the guest,
- * so timer-heavy guests run persistently slower than real time.
+ * An idle warp only covers the real time spent sleeping.  Busy periods advance
+ * QEMU_CLOCK_VIRTUAL by their icount value, whatever real time they took, and
+ * thread wake-up latency around each warp is never returned to the guest.  So
+ * a guest that executes faster than its icount rate runs ahead of real time,
+ * and a mostly idle, timer-heavy guest falls persistently behind it.
  *
  * Track how far QEMU_CLOCK_VIRTUAL lags QEMU_CLOCK_VIRTUAL_RT and shorten or
  * lengthen idle sleeps to remove it.  Repayment only happens while all vCPUs
@@ -246,13 +247,30 @@ int64_t icount_round(int64_t count)
  */
 #define ICOUNT_PACE_MAX_DRIFT_NS (100 * SCALE_MS)
 
+static bool icount_pace;
 static bool icount_pace_started;
 static int64_t icount_pace_offset;
 
 static bool icount_pace_enabled(void)
 {
-    return icount_enabled() == ICOUNT_PRECISE &&
+    return icount_pace && icount_enabled() == ICOUNT_PRECISE &&
            replay_mode == REPLAY_MODE_NONE;
+}
+
+/*
+ * Pick a new reference when the VM (re)starts: loadvm or an incoming migration
+ * moves QEMU_CLOCK_VIRTUAL, and that difference must not be repaid.
+ */
+static void icount_pace_vm_state_change(void *opaque, bool running,
+                                        RunState state)
+{
+    if (running) {
+        seqlock_write_lock(&timers_state.vm_clock_seqlock,
+                           &timers_state.vm_clock_lock);
+        icount_pace_started = false;
+        seqlock_write_unlock(&timers_state.vm_clock_seqlock,
+                             &timers_state.vm_clock_lock);
+    }
 }
 
 /* Real minus guest time, in [-bound, +bound].  Requires the clock seqlock. */
@@ -579,6 +597,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
     const char *option = qemu_opt_get(opts, "shift");
     bool sleep = qemu_opt_get_bool(opts, "sleep", true);
     bool align = qemu_opt_get_bool(opts, "align", false);
+    bool pace = qemu_opt_get_bool(opts, "pace", false);
     long time_shift = -1;
 
     if (!option) {
@@ -586,11 +605,21 @@ bool icount_configure(QemuOpts *opts, Error **errp)
             error_setg(errp, "Please specify shift option when using align");
             return false;
         }
+        if (qemu_opt_get(opts, "pace") != NULL) {
+            error_setg(errp, "Please specify shift option when using pace");
+            return false;
+        }
         return true;
     }
 
     if (align && !sleep) {
         error_setg(errp, "align=on and sleep=off are incompatible");
+        return false;
+    }
+
+    if (pace && (!sleep || align || strcmp(option, "auto") == 0)) {
+        error_setg(errp, "pace=on requires a fixed shift and sleep=on, "
+                   "and is incompatible with align=on");
         return false;
     }
 
@@ -615,6 +644,11 @@ bool icount_configure(QemuOpts *opts, Error **errp)
     }
 
     icount_align_option = align;
+
+    icount_pace = pace;
+    if (icount_pace) {
+        qemu_add_vm_change_state_handler(icount_pace_vm_state_change, NULL);
+    }
 
     if (time_shift >= 0) {
         timers_state.icount_time_shift = time_shift;

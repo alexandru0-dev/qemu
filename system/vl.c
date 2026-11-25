@@ -451,6 +451,9 @@ static QemuOptsList qemu_icount_opts = {
             .name = "sleep",
             .type = QEMU_OPT_BOOL,
         }, {
+            .name = "pace",
+            .type = QEMU_OPT_BOOL,
+        }, {
             .name = "rr",
             .type = QEMU_OPT_STRING,
         }, {

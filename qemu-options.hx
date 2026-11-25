@@ -5358,13 +5358,14 @@ SRST
 ERST
 
 DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
-    "-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=<filename>[,rrsnapshot=<snapshot>]]\n" \
+    "-icount [shift=N|auto][,align=on|off][,sleep=on|off][,pace=on|off][,rr=record|replay,rrfile=<filename>[,rrsnapshot=<snapshot>]]\n" \
     "                enable virtual instruction counter with 2^N clock ticks per\n" \
     "                instruction, enable aligning the host and virtual clocks\n" \
-    "                or disable real time cpu sleeping, and optionally enable\n" \
+    "                or disable real time cpu sleeping, keep virtual time paced\n" \
+    "                to real time across idle periods, and optionally enable\n" \
     "                record-and-replay mode\n", QEMU_ARCH_ALL)
 SRST
-``-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=filename[,rrsnapshot=snapshot]]``
+``-icount [shift=N|auto][,align=on|off][,sleep=on|off][,pace=on|off][,rr=record|replay,rrfile=filename[,rrsnapshot=snapshot]]``
     Enable virtual instruction counter. The virtual cpu will execute one
     instruction every 2^N ns of virtual time. If ``auto`` is specified
     then the virtual cpu speed will be automatically adjusted to keep
@@ -5397,6 +5398,16 @@ SRST
     Typically this happens when the shift value is high (how high
     depends on the host machine). The default if icount is enabled
     is ``align=off``.
+
+    ``pace=on`` keeps the virtual clock within 100 ms of real time by
+    adjusting how long the virtual cpu sleeps when it is idle: shorter
+    when the guest has fallen behind real time, longer when it has run
+    ahead. Unlike ``align=on`` it corrects both directions and never
+    delays a running cpu, but it can only catch up while the guest is
+    idle, and each catch-up stops at the next timer deadline so timers
+    still fire one at a time. ``pace=on`` requires a fixed ``shift``
+    and ``sleep=on``, cannot be combined with ``align=on``, and has no
+    effect in record/replay mode. The default is ``pace=off``.
 
     When the ``rr`` option is specified deterministic record/replay is
     enabled. The ``rrfile=`` option must also be provided to
