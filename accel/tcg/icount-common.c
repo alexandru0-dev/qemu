@@ -634,9 +634,18 @@ bool icount_configure(QemuOpts *opts, Error **errp)
         return false;
     }
 
-    if (pace && (!sleep || align || strcmp(option, "auto") == 0)) {
-        error_setg(errp, "pace=on requires a fixed shift and sleep=on, "
-                   "and is incompatible with align=on");
+    if (pace && !sleep) {
+        error_setg(errp, "pace=on and sleep=off are incompatible");
+        return false;
+    }
+
+    if (pace && align) {
+        error_setg(errp, "pace=on and align=on are incompatible");
+        return false;
+    }
+
+    if (pace && strcmp(option, "auto") == 0) {
+        error_setg(errp, "shift=auto and pace=on are incompatible");
         return false;
     }
 
