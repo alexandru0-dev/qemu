@@ -548,11 +548,7 @@ void qemu_cond_timedwait_ns_bql(QemuCond *cond, int64_t ns)
     if (ns > max_ns) {
         ns = max_ns;
     }
-#ifdef _WIN32
-    qemu_cond_timedwait(cond, &bql, DIV_ROUND_UP(ns, SCALE_MS));
-#else
     qemu_cond_timedwait_ns_impl(cond, &bql, ns, __FILE__, __LINE__);
-#endif
 }
 
 /* signal CPU creation */

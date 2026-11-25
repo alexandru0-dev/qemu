@@ -68,15 +68,20 @@ static inline clockid_t qemu_timedwait_clockid(void)
 #endif
 }
 
-static void compute_abs_deadline(struct timespec *ts, int ms)
+static void compute_abs_deadline_ns(struct timespec *ts, int64_t ns)
 {
     clock_gettime(qemu_timedwait_clockid(), ts);
-    ts->tv_nsec += (ms % 1000) * 1000000;
-    ts->tv_sec += ms / 1000;
-    if (ts->tv_nsec >= 1000000000) {
+    ts->tv_nsec += ns % NANOSECONDS_PER_SECOND;
+    ts->tv_sec += ns / NANOSECONDS_PER_SECOND;
+    if (ts->tv_nsec >= NANOSECONDS_PER_SECOND) {
         ts->tv_sec++;
-        ts->tv_nsec -= 1000000000;
+        ts->tv_nsec -= NANOSECONDS_PER_SECOND;
     }
+}
+
+static void compute_abs_deadline(struct timespec *ts, int ms)
+{
+    compute_abs_deadline_ns(ts, (int64_t)ms * SCALE_MS);
 }
 
 void qemu_mutex_init(QemuMutex *mutex)
@@ -271,21 +276,9 @@ bool qemu_cond_timedwait_impl(QemuCond *cond, QemuMutex *mutex, int ms,
 bool qemu_cond_timedwait_ns_impl(QemuCond *cond, QemuMutex *mutex, int64_t ns,
                                  const char *file, const int line)
 {
-    const int64_t max_ns = (int64_t)INT_MAX * 1000000;
     struct timespec ts;
 
-    if (ns < 0) {
-        ns = 0;
-    } else if (ns > max_ns) {
-        ns = max_ns;
-    }
-    clock_gettime(qemu_timedwait_clockid(), &ts);
-    ts.tv_sec += ns / 1000000000;
-    ts.tv_nsec += ns % 1000000000;
-    if (ts.tv_nsec >= 1000000000) {
-        ts.tv_sec++;
-        ts.tv_nsec -= 1000000000;
-    }
+    compute_abs_deadline_ns(&ts, MAX(ns, 0));
     return qemu_cond_timedwait_ts(cond, mutex, &ts, file, line);
 }
 

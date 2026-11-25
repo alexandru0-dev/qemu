@@ -179,11 +179,12 @@ void TSA_NO_TSA qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex,
                                     const char *file, const int line);
 bool qemu_cond_timedwait_impl(QemuCond *cond, QemuMutex *mutex, int ms,
                               const char *file, const int line);
-#ifndef _WIN32
-/* Like qemu_cond_timedwait_impl with a timeout in nanoseconds. */
+/*
+ * Like qemu_cond_timedwait_impl with a timeout in nanoseconds (rounded up to
+ * milliseconds on Windows). The timeout must fit INT_MAX milliseconds.
+ */
 bool qemu_cond_timedwait_ns_impl(QemuCond *cond, QemuMutex *mutex, int64_t ns,
                                  const char *file, const int line);
-#endif
 
 static inline void (qemu_cond_wait)(QemuCond *cond, QemuMutex *mutex)
 {

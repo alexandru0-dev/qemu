@@ -360,6 +360,14 @@ static void icount_warp_rt(void)
 }
 
 /*
+ * Set, under the BQL, while the vCPU thread sleeps through an idle period
+ * itself. The BQL is released during that sleep, so main_loop_wait() could
+ * run icount_start_warp_timer() and arm a second warp for the same period;
+ * it leaves the period to the vCPU instead.
+ */
+static bool icount_vcpu_idle_sleep;
+
+/*
  * sleep=on counterpart of icount_warp_idle_in_vcpu(): the vCPU thread sleeps
  * through an idle period itself instead of waking the main loop to arm the warp
  * timer and waiting for it to warp and kick back. It starts the warp as
@@ -378,7 +386,7 @@ int64_t icount_idle_sleep_begin(void)
 
     if (!icount_sleep || icount_enabled() != ICOUNT_PRECISE ||
         icount_align_option || replay_mode != REPLAY_MODE_NONE ||
-        !runstate_is_running()) {
+        !runstate_is_running() || qtest_enabled()) {
         return -1;
     }
 
@@ -402,6 +410,7 @@ int64_t icount_idle_sleep_begin(void)
     }
     seqlock_write_unlock(&timers_state.vm_clock_seqlock,
                          &timers_state.vm_clock_lock);
+    icount_vcpu_idle_sleep = true;
     return MAX(sleep_ns, 0);
 }
 
@@ -411,6 +420,7 @@ int64_t icount_idle_sleep_begin(void)
  */
 void icount_idle_sleep_end(void)
 {
+    icount_vcpu_idle_sleep = false;
     icount_warp_rt_account();
 }
 
@@ -475,6 +485,11 @@ void icount_start_warp_timer(void)
      * do not fire, so computing the deadline does not make sense.
      */
     if (!runstate_is_running()) {
+        return;
+    }
+
+    /* The vCPU thread is sleeping through this idle period itself. */
+    if (icount_vcpu_idle_sleep) {
         return;
     }
 

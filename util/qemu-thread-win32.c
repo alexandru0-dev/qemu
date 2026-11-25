@@ -188,6 +188,15 @@ bool qemu_cond_timedwait_impl(QemuCond *cond, QemuMutex *mutex, int ms,
     return rc != ERROR_TIMEOUT;
 }
 
+bool qemu_cond_timedwait_ns_impl(QemuCond *cond, QemuMutex *mutex, int64_t ns,
+                                 const char *file, const int line)
+{
+    /* SleepConditionVariableSRW() takes milliseconds; round up. */
+    int64_t ms = DIV_ROUND_UP(MAX(ns, 0), SCALE_MS);
+
+    return qemu_cond_timedwait_impl(cond, mutex, MIN(ms, INT_MAX), file, line);
+}
+
 void qemu_sem_init(QemuSemaphore *sem, int init)
 {
     /* Manual reset.  */
