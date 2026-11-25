@@ -88,7 +88,7 @@ void check_interrupts(CPUXtensaState *env)
     int level = xtensa_pending_level(env);
 
     if (level) {
-        env->pending_irq_level = level;
+        qatomic_set(&env->pending_irq_level, level);
         cpu_interrupt(cs, CPU_INTERRUPT_HARD);
         qemu_log_mask(CPU_LOG_INT,
                 "%s level = %d, cintlevel = %d, "
@@ -101,7 +101,7 @@ void check_interrupts(CPUXtensaState *env)
                 env->sregs[CCOUNT]);
         return;
     }
-    env->pending_irq_level = 0;
+    qatomic_set(&env->pending_irq_level, 0);
     cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
 }
 
@@ -119,6 +119,12 @@ static void xtensa_set_irq(void *opaque, int irq, int active)
         } else if (env->config->interrupt[irq].inttype == INTTYPE_LEVEL) {
             qatomic_and(&env->sregs[INTSET], ~irq_bit);
         }
+        /*
+         * Order the INTSET update before check_interrupts() reads PS and
+         * INTENABLE. Pairs with the barrier the vCPU issues between storing
+         * those and reading INTSET when it checks interrupts without the BQL.
+         */
+        smp_mb__after_rmw();
 
         check_interrupts(env);
     }
