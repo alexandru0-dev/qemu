@@ -296,7 +296,7 @@ static bool icount_warp_rt_account(void)
     }
 
     deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-                                        QEMU_TIMER_ATTR_ALL);
+                                          ~QEMU_TIMER_ATTR_EXTERNAL);
     seqlock_write_lock(&timers_state.vm_clock_seqlock,
                        &timers_state.vm_clock_lock);
     if (runstate_is_running()) {
