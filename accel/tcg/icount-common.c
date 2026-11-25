@@ -313,8 +313,16 @@ static bool icount_warp_rt_account(void)
         return false;
     }
 
-    deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-                                          ~QEMU_TIMER_ATTR_EXTERNAL);
+    /*
+     * Cap the warp at the next deadline, but not in record/replay: replay
+     * recomputes the warp from the recorded clock, and a different warp
+     * would make existing recordings diverge.
+     */
+    deadline = -1;
+    if (replay_mode == REPLAY_MODE_NONE) {
+        deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                              ~QEMU_TIMER_ATTR_EXTERNAL);
+    }
     seqlock_write_lock(&timers_state.vm_clock_seqlock,
                        &timers_state.vm_clock_lock);
     if (runstate_is_running()) {
